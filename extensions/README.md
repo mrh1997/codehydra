@@ -17,6 +17,15 @@ extensions/
 │   ├── extension.js          # Extension entry point
 │   ├── api.d.ts              # TypeScript declarations for third-party use
 │   └── esbuild.config.js     # Build configuration
+├── markdown-review-editor/   # AI-assisted markdown review editor
+│   ├── package.json          # Extension manifest
+│   ├── src/                  # TypeScript source
+│   │   ├── extension/        # VS Code extension host code
+│   │   ├── webview/          # Svelte webview entry
+│   │   └── lib/              # Shared components and utilities
+│   ├── tests/                # Vitest unit tests
+│   ├── vite.config.ts        # Webview build configuration
+│   └── tsconfig.json         # TypeScript configuration
 └── README.md                 # This file
 ```
 
