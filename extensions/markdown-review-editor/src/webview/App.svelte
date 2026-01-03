@@ -25,6 +25,13 @@
 	let wordCount = $state<number | null>(null);
 	let currentRequestId = $state<string | null>(null);
 
+	// Undo state - stores document and annotations before Apply Comments
+	interface UndoState {
+		document: string;
+		annotations: AnnotationContent[];
+	}
+	let previousState = $state<UndoState | null>(null);
+
 	onMount(() => {
 		// Listen for messages from extension
 		window.addEventListener('message', handleExtensionMessage);
@@ -137,6 +144,15 @@
 			const originalDocument = annotator.getDocument();
 			const annotations = getAllAnnotations();
 
+			// Store current state for undo BEFORE making any changes
+			previousState = {
+				document: originalDocument,
+				annotations: annotations.map((a) => ({
+					id: a.id,
+					messages: a.messages.map((m) => ({ ...m }))
+				}))
+			};
+
 			// 2. Send to OpenCode with progress callback
 			const result = await applyComments(annotations, originalDocument, {
 				requestId: currentRequestId,
@@ -210,6 +226,32 @@
 		// Mark as dirty by notifying of change
 		notifyContentChanged();
 	}
+
+	/**
+	 * Undo the last "Apply Comments" operation.
+	 * Restores the document and annotations to their state before applying.
+	 */
+	function handleUndo() {
+		if (!previousState) return;
+
+		// Capture state we need BEFORE clearing (setDocument triggers reactivity)
+		const docToRestore = previousState.document;
+		const annotationsToRestore = previousState.annotations;
+
+		// Clear the undo state FIRST (before any reactive updates that might interrupt execution)
+		previousState = null;
+
+		// Restore document (without diff highlighting since we're restoring to exact previous state)
+		annotator.setDocument(docToRestore);
+
+		// Restore annotations
+		for (const annotation of annotationsToRestore) {
+			annotator.setAnnotation(annotation.id, annotation);
+		}
+
+		// Notify extension of changes (triggers persistence)
+		notifyContentChanged();
+	}
 </script>
 
 <svelte:window
@@ -234,6 +276,9 @@
 			<button onclick={handleApplyComments} disabled={isApplying}>
 				Apply Comments (Ctrl-Enter)...
 			</button>
+			{#if previousState}
+				<button class="undo-button" onclick={handleUndo}>Undo</button>
+			{/if}
 		{/if}
 		{#if applyError}
 			<span class="error-message">{applyError}</span>
@@ -313,6 +358,12 @@
 
 	.toolbar button.cancel-button {
 		background-color: var(--color-error, #d32f2f);
+	}
+
+	.toolbar button.undo-button {
+		background-color: var(--color-bg-tertiary, #3c3c3c);
+		color: var(--color-text-primary, #cccccc);
+		border: 1px solid var(--color-border, #454545);
 	}
 
 	.spinner {
