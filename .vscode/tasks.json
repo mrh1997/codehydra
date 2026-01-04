@@ -2,9 +2,10 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "setup",
-      "type": "npm",
-      "script": "setup",
+      "label": "bootstrap",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["bootstrap"],
       "problemMatcher": [],
       "runOptions": {
         "runOn": "folderOpen"

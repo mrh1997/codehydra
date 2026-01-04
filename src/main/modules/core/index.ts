@@ -4,7 +4,7 @@
  * Responsibilities:
  * - Project operations: open, close, list, get, fetchBases
  * - Workspace operations: create, remove, forceRemove, get, getStatus,
- *   getOpencodePort, setMetadata, getMetadata
+ *   getOpenCodeSession, setMetadata, getMetadata
  *
  * Created in startServices() after setup is complete.
  */
@@ -33,7 +33,9 @@ import type {
   DeletionOperation,
   DeletionOperationId,
   BlockingProcess,
+  OpenCodeSession,
 } from "../../../shared/api/types";
+import { normalizeInitialPrompt } from "../../../shared/api/types";
 import type { WorkspacePath } from "../../../shared/ipc";
 import type { AppState } from "../../app-state";
 import type { IViewManager } from "../../managers/view-manager.interface";
@@ -173,9 +175,13 @@ export class CoreModule implements IApiModule {
     this.api.register("workspaces.getStatus", this.workspaceGetStatus.bind(this), {
       ipc: ApiIpcChannels.WORKSPACE_GET_STATUS,
     });
-    this.api.register("workspaces.getOpencodePort", this.workspaceGetOpencodePort.bind(this), {
-      ipc: ApiIpcChannels.WORKSPACE_GET_OPENCODE_PORT,
-    });
+    this.api.register(
+      "workspaces.getOpenCodeSession",
+      this.workspaceGetOpenCodeSession.bind(this),
+      {
+        ipc: ApiIpcChannels.WORKSPACE_GET_OPENCODE_SESSION,
+      }
+    );
     this.api.register(
       "workspaces.restartOpencodeServer",
       this.workspaceRestartOpencodeServer.bind(this),
@@ -273,8 +279,24 @@ export class CoreModule implements IApiModule {
 
     const internalWorkspace = await provider.createWorkspace(payload.name, payload.base);
 
-    this.deps.appState.addWorkspace(projectPath, internalWorkspace);
+    // Normalize initial prompt if provided
+    const normalizedPrompt = payload.initialPrompt
+      ? normalizeInitialPrompt(payload.initialPrompt)
+      : undefined;
+
+    // Add workspace and start server (with optional initial prompt)
+    this.deps.appState.addWorkspace(
+      projectPath,
+      internalWorkspace,
+      normalizedPrompt ? { initialPrompt: normalizedPrompt } : undefined
+    );
     this.deps.appState.setLastBaseBranch(projectPath, payload.base);
+
+    // Switch to the new workspace unless keepInBackground is true
+    if (!payload.keepInBackground) {
+      // focus=true ensures the new workspace receives keyboard events (e.g., Alt+X for shortcuts)
+      this.deps.viewManager.setActiveWorkspace(internalWorkspace.path.toString(), true);
+    }
 
     // Convert internal workspace (with Path) to API workspace (with string path)
     const workspace = this.toApiWorkspace(payload.projectId, {
@@ -282,7 +304,14 @@ export class CoreModule implements IApiModule {
       branch: internalWorkspace.branch,
       metadata: internalWorkspace.metadata,
     });
-    this.api.emit("workspace:created", { projectId: payload.projectId, workspace });
+
+    // Emit workspace:created event with hasInitialPrompt and keepInBackground flags
+    this.api.emit("workspace:created", {
+      projectId: payload.projectId,
+      workspace,
+      ...(normalizedPrompt && { hasInitialPrompt: true }),
+      ...(payload.keepInBackground && { keepInBackground: true }),
+    });
 
     return workspace;
   }
@@ -387,12 +416,13 @@ export class CoreModule implements IApiModule {
     };
   }
 
-  private async workspaceGetOpencodePort(payload: WorkspaceRefPayload): Promise<number | null> {
+  private async workspaceGetOpenCodeSession(
+    payload: WorkspaceRefPayload
+  ): Promise<OpenCodeSession | null> {
     const { workspace } = await this.resolveWorkspace(payload);
 
-    const serverManager = this.deps.appState.getServerManager();
-    const port = serverManager?.getPort(workspace.path);
-    return port || null;
+    const agentStatusManager = this.deps.appState.getAgentStatusManager();
+    return agentStatusManager?.getSession(workspace.path as WorkspacePath) ?? null;
   }
 
   private async workspaceRestartOpencodeServer(payload: WorkspaceRefPayload): Promise<number> {

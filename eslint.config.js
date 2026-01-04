@@ -47,16 +47,9 @@ export default tseslint.config(
       "@typescript-eslint/no-require-imports": "off",
     },
   },
-  // VS Code extensions use CommonJS for compatibility
-  {
-    files: ["extensions/**/*.js"],
-    rules: {
-      "@typescript-eslint/no-require-imports": "off",
-    },
-  },
   // VS Code extensions - allow underscore-prefixed unused vars (interface implementations)
   {
-    files: ["extensions/**/*.ts"],
+    files: ["extensions/**/*.ts", "extensions/**/*.svelte"],
     rules: {
       "@typescript-eslint/no-unused-vars": [
         "error",
@@ -72,6 +65,31 @@ export default tseslint.config(
         "error",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
       ],
+    },
+  },
+  // State mocks - allow empty object types for conditional interface extension
+  // and unused type parameters in vitest module augmentation
+  {
+    files: ["**/state-mock.ts", "**/*.state-mock.ts"],
+    rules: {
+      "@typescript-eslint/no-empty-object-type": [
+        "error",
+        { allowInterfaces: "with-single-extends", allowObjectTypes: "always" },
+      ],
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_|^T$" },
+      ],
+    },
+  },
+  // markdown-review-editor CommentEditor.svelte - specific overrides
+  {
+    files: ["extensions/markdown-review-editor/src/lib/components/CommentEditor.svelte"],
+    rules: {
+      // @html is used intentionally for rendering trusted markdown content from user's own files
+      "svelte/no-at-html-tags": "off",
+      // $state + $effect pattern is valid for controlled inputs (requires Svelte 5.25+ for writable derived)
+      "svelte/prefer-writable-derived": "off",
     },
   }
 );

@@ -13,6 +13,8 @@ import type {
   BaseInfo,
   SetupResult,
   AppState,
+  InitialPrompt,
+  OpenCodeSession,
 } from "../../shared/api/types";
 import type { UIMode } from "../../shared/ipc";
 import type { ApiEvents, Unsubscribe, ICodeHydraApi } from "../../shared/api/interfaces";
@@ -39,6 +41,10 @@ export interface WorkspaceCreatePayload {
   readonly projectId: ProjectId;
   readonly name: string;
   readonly base: string;
+  /** Optional initial prompt to send after workspace is created */
+  readonly initialPrompt?: InitialPrompt;
+  /** If true, don't switch to the new workspace (default: false = switch to it) */
+  readonly keepInBackground?: boolean;
 }
 
 /** workspaces.remove */
@@ -121,7 +127,9 @@ export interface MethodRegistry {
   "workspaces.forceRemove": (payload: WorkspaceRefPayload) => Promise<void>;
   "workspaces.get": (payload: WorkspaceRefPayload) => Promise<Workspace | undefined>;
   "workspaces.getStatus": (payload: WorkspaceRefPayload) => Promise<WorkspaceStatus>;
-  "workspaces.getOpencodePort": (payload: WorkspaceRefPayload) => Promise<number | null>;
+  "workspaces.getOpenCodeSession": (
+    payload: WorkspaceRefPayload
+  ) => Promise<OpenCodeSession | null>;
   "workspaces.restartOpencodeServer": (payload: WorkspaceRefPayload) => Promise<number>;
   "workspaces.setMetadata": (payload: WorkspaceSetMetadataPayload) => Promise<void>;
   "workspaces.getMetadata": (
@@ -169,7 +177,7 @@ export type WorkspacePath =
   | "workspaces.forceRemove"
   | "workspaces.get"
   | "workspaces.getStatus"
-  | "workspaces.getOpencodePort"
+  | "workspaces.getOpenCodeSession"
   | "workspaces.restartOpencodeServer"
   | "workspaces.setMetadata"
   | "workspaces.getMetadata"
@@ -215,7 +223,7 @@ export const ALL_METHOD_PATHS = [
   "workspaces.forceRemove",
   "workspaces.get",
   "workspaces.getStatus",
-  "workspaces.getOpencodePort",
+  "workspaces.getOpenCodeSession",
   "workspaces.restartOpencodeServer",
   "workspaces.setMetadata",
   "workspaces.getMetadata",

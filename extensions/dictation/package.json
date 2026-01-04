@@ -3,6 +3,7 @@
   "displayName": "CodeHydra Dictation",
   "description": "Voice-to-text dictation for VS Code",
   "version": "1.0.0-placeholder",
+  "type": "module",
   "publisher": "codehydra",
   "repository": {
     "type": "git",
@@ -14,38 +15,15 @@
   "activationEvents": [
     "onStartupFinished"
   ],
-  "main": "./dist/extension.js",
+  "main": "./dist/extension.cjs",
   "scripts": {
-    "build": "node esbuild.config.js"
+    "build": "vite build"
   },
   "dependencies": {
+    "@vscode/codicons": "^0.0.43",
     "assemblyai": "^4.0.0"
   },
-  "devDependencies": {
-    "esbuild": "^0.24.0",
-    "@types/vscode": "^1.74.0",
-    "typescript": "^5.0.0"
-  },
   "contributes": {
-    "viewsContainers": {
-      "panel": [
-        {
-          "id": "codehydra-dictation",
-          "title": "Dictation",
-          "icon": "$(mic)"
-        }
-      ]
-    },
-    "views": {
-      "codehydra-dictation": [
-        {
-          "type": "webview",
-          "id": "codehydra.dictation.audioCapture",
-          "name": "Audio Capture",
-          "visibility": "hidden"
-        }
-      ]
-    },
     "commands": [
       {
         "command": "codehydra.dictation.toggle",
@@ -58,6 +36,14 @@
       {
         "command": "codehydra.dictation.stop",
         "title": "Dictation: Stop Recording"
+      },
+      {
+        "command": "codehydra.dictation.cancel",
+        "title": "Dictation: Cancel Recording (no Enter)"
+      },
+      {
+        "command": "codehydra.dictation.openPanel",
+        "title": "Dictation: Open Panel"
       }
     ],
     "keybindings": [
@@ -67,8 +53,9 @@
         "mac": "f10"
       },
       {
-        "command": "codehydra.dictation.stop",
+        "command": "codehydra.dictation.cancel",
         "key": "escape",
+        "mac": "escape",
         "when": "codehydra.dictation.isRecording"
       }
     ],
@@ -89,18 +76,38 @@
           "default": "",
           "description": "AssemblyAI API key for speech-to-text. Get one at https://www.assemblyai.com/"
         },
-        "codehydra.dictation.silenceTimeout": {
+        "codehydra.dictation.assemblyai.connectionTimeout": {
           "type": "number",
-          "default": 10,
-          "minimum": 5,
+          "default": 2000,
+          "minimum": 1000,
+          "maximum": 10000,
+          "description": "Connection timeout in milliseconds when connecting to AssemblyAI."
+        },
+        "codehydra.dictation.autoStopDelay": {
+          "type": "number",
+          "default": 5,
+          "minimum": 3,
           "maximum": 60,
-          "description": "Auto-stop after this many seconds without receiving any transcribed text."
+          "description": "Auto-stop after this many seconds without speech activity."
+        },
+        "codehydra.dictation.listeningDelay": {
+          "type": "number",
+          "default": 300,
+          "minimum": 100,
+          "maximum": 1000,
+          "description": "Delay in milliseconds before showing 'listening' (orange) state when no speech detected."
+        },
+        "codehydra.dictation.autoSubmit": {
+          "type": "boolean",
+          "default": true,
+          "description": "Emit Enter key when manually stopping dictation (F10 or status bar click)."
         }
       }
     },
     "configurationDefaults": {
       "terminal.integrated.commandsToSkipShell": [
-        "codehydra.dictation.toggle"
+        "codehydra.dictation.toggle",
+        "codehydra.dictation.cancel"
       ]
     }
   }

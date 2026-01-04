@@ -121,6 +121,20 @@ path1 === path2;                     // ❌ Fails for "C:\foo" vs "C:/foo"
 
 **Full details**: See [Path Handling Patterns](docs/PATTERNS.md#path-handling-patterns) for code examples.
 
+### Use 127.0.0.1 Instead of localhost
+
+**ALWAYS use `127.0.0.1` instead of `localhost` for local network connections.**
+
+- Server bindings: `server.listen(port, "127.0.0.1")`
+- URL construction: `http://127.0.0.1:${port}/...`
+- Socket connections: `{ host: "127.0.0.1", port }`
+
+**Why this matters:**
+
+1. **IPv4/IPv6 mismatch**: Node.js may resolve `localhost` to `::1` (IPv6) while servers bind to `127.0.0.1` (IPv4), causing connection failures
+2. **Windows DNS latency**: Resolving `localhost` on Windows can be slow, causing test timeouts
+3. **Consistency**: Using explicit IP avoids platform-specific DNS behavior
+
 ### Ask When Uncertain
 
 **NEVER make decisions based on assumptions without proof.**
@@ -146,23 +160,23 @@ This also applies to other situations where you're uncertain - ask rather than g
 | Backend         | Node.js services                         |
 | Testing         | Vitest                                   |
 | Build           | Vite                                     |
-| Package Manager | npm                                      |
+| Package Manager | pnpm                                     |
 
 ### Essential Commands
 
-| Command                | Purpose                             |
-| ---------------------- | ----------------------------------- |
-| `npm run dev`          | Start development mode              |
-| `npm run validate:fix` | Fix lint/format issues, run tests   |
-| `npm test`             | Run all tests                       |
-| `npm run build`        | Build for production                |
-| `npm run dist`         | Create distributable for current OS |
-| `npm run dist:linux`   | Create Linux AppImage               |
-| `npm run dist:win`     | Create Windows portable exe         |
-| `npm run site:dev`     | Start landing page dev server       |
-| `npm run site:build`   | Build landing page for production   |
-| `npm run site:preview` | Preview built landing page          |
-| `npm run site:check`   | Type-check landing page             |
+| Command             | Purpose                             |
+| ------------------- | ----------------------------------- |
+| `pnpm dev`          | Start development mode              |
+| `pnpm validate:fix` | Fix lint/format issues, run tests   |
+| `pnpm test`         | Run all tests                       |
+| `pnpm build`        | Build for production                |
+| `pnpm dist`         | Create distributable for current OS |
+| `pnpm dist:linux`   | Create Linux AppImage               |
+| `pnpm dist:win`     | Create Windows portable exe         |
+| `pnpm site:dev`     | Start landing page dev server       |
+| `pnpm site:build`   | Build landing page for production   |
+| `pnpm site:preview` | Preview built landing page          |
+| `pnpm site:check`   | Type-check landing page             |
 
 ### Key Documents
 
@@ -210,9 +224,9 @@ The landing page at [codehydra.dev](https://codehydra.dev) is built with Vite + 
 **Development:**
 
 ```bash
-npm run site:dev      # Start dev server at localhost:5173
-npm run site:build    # Build to site/dist/
-npm run site:check    # Type-check
+pnpm site:dev      # Start dev server at localhost:5173
+pnpm site:build    # Build to site/dist/
+pnpm site:check    # Type-check
 ```
 
 The landing page is self-contained and does not import from the main app's source code.
@@ -241,13 +255,13 @@ VS Code setup assets are stored as dedicated files instead of inline code.
 | `extensions/external.json` | External extension IDs and versions (downloaded at build time) |
 | `extensions/sidekick/`     | Custom extension source (packaged to .vsix at build)           |
 
-**Note:** There are no `settings.json` or `keybindings.json` asset files. VS Code settings with `window` or `resource` scope can be configured via the sidekick extension's `configurationDefaults` in `package.json`. Application-scope settings (like telemetry and workspace trust) cannot be set by extensions.
+**Note:** All extensions must use TypeScript (not JavaScript/JSDoc). There are no `settings.json` or `keybindings.json` asset files. VS Code settings with `window` or `resource` scope can be configured via the sidekick extension's `configurationDefaults` in `package.json`. Application-scope settings (like telemetry and workspace trust) cannot be set by extensions.
 
 ### Build Process
 
-1. **Extension packaging**: `npm run build:extensions` auto-discovers extension folders, packages them to `dist/extensions/`, downloads external extensions from VS Code Marketplace, and generates `manifest.json`
+1. **Extension packaging**: `pnpm build:extensions` auto-discovers extension folders, packages them to `dist/extensions/`, downloads external extensions from VS Code Marketplace, and generates `manifest.json`
 2. **Asset bundling**: `vite-plugin-static-copy` copies `dist/extensions/*` to `out/main/assets/` during build
-3. **Full build**: `npm run build` runs both steps sequentially
+3. **Full build**: `pnpm build` runs both steps sequentially
 
 **Manifest format** (flat array - all extensions are pre-bundled):
 
@@ -288,7 +302,7 @@ App version via `__APP_VERSION__` (Vite define), logged on startup.
 
 CodeHydra downloads code-server and opencode binaries from GitHub releases. This happens automatically during:
 
-1. **Development (`npm install`)**: Downloads to `./app-data/` via postinstall script
+1. **Development (`pnpm install`)**: Downloads to `./app-data/` via postinstall script
 2. **Production (app setup)**: Downloads to user's app-data directory during first-run setup
 
 ### Binary Storage Layout
@@ -315,32 +329,41 @@ Binary versions are defined in `src/services/binary-download/versions.ts`:
 - `CODE_SERVER_VERSION` - code-server release version
 - `OPENCODE_VERSION` - opencode release version
 
-When these are updated, `npm install` will download new versions. Production installations re-download on next app launch (setup version is incremented).
+When these are updated, `pnpm install` will download new versions. Production installations re-download on next app launch (setup version is incremented).
 
 ## CLI Wrapper Scripts
 
-During VS Code setup, CLI wrapper scripts are generated in `<app-data>/bin/`:
+During VS Code setup, CLI wrapper scripts are copied from bundled assets to `<app-data>/bin/`:
 
-| Script                      | Purpose                                                             |
-| --------------------------- | ------------------------------------------------------------------- |
-| `code` / `code.cmd`         | VS Code CLI (code-server's remote-cli)                              |
-| `opencode` / `opencode.cmd` | Wrapper that reads `CODEHYDRA_OPENCODE_PORT` and attaches to server |
+| Script                      | Purpose                                                     |
+| --------------------------- | ----------------------------------------------------------- |
+| `code` / `code.cmd`         | VS Code CLI (code-server's remote-cli)                      |
+| `opencode` / `opencode.cmd` | Wrapper that reads env vars and attaches to OpenCode server |
 
 **opencode wrapper architecture:**
 
 ```
 opencode (shell) → opencode.cjs (Node.js) → opencode binary
                         ├─ Reads $CODEHYDRA_OPENCODE_PORT (set by sidekick extension)
-                        └─ Runs `opencode attach http://127.0.0.1:<port>`
+                        ├─ Reads $CODEHYDRA_OPENCODE_SESSION_ID (set by sidekick extension)
+                        ├─ Reads $CODEHYDRA_OPENCODE_DIR (set by CodeServerManager)
+                        └─ Runs `opencode attach http://127.0.0.1:<port> --session <id>`
 ```
 
-- Uses bundled Node.js from code-server (`<app-data>/code-server/<version>/lib/node`)
-- **Only works in managed terminals**: The sidekick extension sets `CODEHYDRA_OPENCODE_PORT` for all new terminals
-- Thin shell wrappers (`opencode` / `opencode.cmd`) delegate all logic to the cross-platform `opencode.cjs` script
+**Environment Variables (set by CodeServerManager when spawning code-server):**
 
-**Session Restoration**: The wrapper automatically queries the OpenCode server for existing
-sessions, filters by the current workspace directory, and restores the most recently updated
-session. If no session is found or the request fails, a new session is started with the default agent.
+| Variable                        | Set By             | Purpose                                       |
+| ------------------------------- | ------------------ | --------------------------------------------- |
+| `CODEHYDRA_CODE_SERVER_DIR`     | CodeServerManager  | Directory containing code-server installation |
+| `CODEHYDRA_OPENCODE_DIR`        | CodeServerManager  | Directory containing opencode binary          |
+| `CODEHYDRA_OPENCODE_PORT`       | sidekick extension | Port of running OpenCode server               |
+| `CODEHYDRA_OPENCODE_SESSION_ID` | sidekick extension | Primary session ID for the workspace          |
+
+- Uses bundled Node.js from code-server (`$CODEHYDRA_CODE_SERVER_DIR/lib/node`)
+- **Only works in managed terminals**: The sidekick extension sets `CODEHYDRA_OPENCODE_PORT` and `CODEHYDRA_OPENCODE_SESSION_ID` for all new terminals
+- Thin shell wrappers (`opencode` / `opencode.cmd`) delegate all logic to the cross-platform `opencode.cjs` script (compiled from TypeScript at build time)
+
+**Session Restoration**: The wrapper reads the session ID from `CODEHYDRA_OPENCODE_SESSION_ID` (set by the sidekick extension on connect) and passes it to the `opencode attach` command with `--session <id>`. This eliminates SDK calls and provides instant session attachment.
 
 These scripts are available in the integrated terminal because:
 
@@ -463,12 +486,12 @@ CODEHYDRA_ELECTRON_FLAGS="--disable-gpu --disable-software-rasterizer"
 1. **Disable GPU** (most common fix):
 
    ```bash
-   CODEHYDRA_ELECTRON_FLAGS="--disable-gpu" npm run dev
+   CODEHYDRA_ELECTRON_FLAGS="--disable-gpu" pnpm dev
    ```
 
 2. **For WebGL-specific crashes**:
    ```bash
-   CODEHYDRA_ELECTRON_FLAGS="--use-gl=swiftshader" npm run dev
+   CODEHYDRA_ELECTRON_FLAGS="--use-gl=swiftshader" pnpm dev
    ```
 
 ## Log Files
@@ -519,10 +542,10 @@ Log entries follow this format:
 
 ```bash
 # Enable verbose logging to console
-CODEHYDRA_LOGLEVEL=debug CODEHYDRA_PRINT_LOGS=1 npm run dev
+CODEHYDRA_LOGLEVEL=debug CODEHYDRA_PRINT_LOGS=1 pnpm dev
 
 # Filter to specific loggers only
-CODEHYDRA_LOGGER=git,process npm run dev
+CODEHYDRA_LOGGER=git,process pnpm dev
 
 # View recent log file
 tail -f ./app-data/logs/*.log
@@ -742,7 +765,7 @@ VS Code extension communication via Socket.IO:
 
 - **Architecture**: PluginServer (main) ↔ codehydra extension (Socket.IO client)
 - **Connection**: Extension reads `CODEHYDRA_PLUGIN_PORT` env var on activation
-- **Startup commands**: Auto-configures workspace layout (close sidebars, open terminal)
+- **Startup commands**: Auto-configures workspace layout (close sidebars, open terminal, open dictation tab if configured)
 - **Shutdown event**: Terminates extension host on workspace deletion (releases file handles on Windows)
 
 **Server → Client Events:**
@@ -849,24 +872,27 @@ CodeHydra runs an MCP (Model Context Protocol) server that exposes workspace API
 
 ### Available Tools
 
-| Tool                                | Description                                       |
-| ----------------------------------- | ------------------------------------------------- |
-| `workspace_get_status`              | Get workspace status (dirty flag, agent status)   |
-| `workspace_get_metadata`            | Get all workspace metadata                        |
-| `workspace_set_metadata`            | Set or delete a metadata key                      |
-| `workspace_get_opencode_port`       | Get OpenCode server port                          |
-| `workspace_restart_opencode_server` | Restart OpenCode server, preserving the same port |
-| `workspace_execute_command`         | Execute a VS Code command                         |
-| `workspace_delete`                  | Delete the workspace                              |
+| Tool                                | Description                                         |
+| ----------------------------------- | --------------------------------------------------- |
+| `workspace_get_status`              | Get workspace status (dirty flag, agent status)     |
+| `workspace_get_metadata`            | Get all workspace metadata                          |
+| `workspace_set_metadata`            | Set or delete a metadata key                        |
+| `workspace_get_opencode_port`       | Get OpenCode server port                            |
+| `workspace_restart_opencode_server` | Restart OpenCode server, preserving the same port   |
+| `workspace_execute_command`         | Execute a VS Code command                           |
+| `workspace_delete`                  | Delete the workspace                                |
+| `workspace_create`                  | Create a new workspace with optional initial prompt |
 
 **Note**: MCP tools mirror the Public API workspace methods. See `docs/API.md` for detailed documentation.
+
+**VS Code Object Serialization**: Commands requiring VS Code objects (Uri, Position, Range, Selection, Location) use the `$vscode` wrapper format. Example: `{ "$vscode": "Uri", "value": "file:///path/to/file.ts" }`. See [docs/API.md#vs-code-object-serialization](docs/API.md#vs-code-object-serialization) for full format documentation.
 
 ## Development Workflow
 
 - **Features**: Efficient coverage - implement with tests, batch validate at end
 - **Bug fixes (cleanup phase)**: Fix issue, ensure test coverage exists
-- Scripts: `npm run dev`, `npm run build`, `npm test`, `npm run lint`
-- Use `npm install <package>` for dependencies (never edit package.json manually)
+- Scripts: `pnpm dev`, `pnpm build`, `pnpm test`, `pnpm lint`
+- Use `pnpm add <package>` for dependencies (never edit package.json manually)
 
 ## Git Worktree Merge Workflow
 
@@ -913,37 +939,163 @@ See `docs/TESTING.md` for the complete testing strategy.
 For features and new code:
 
 1. **IMPLEMENT**: Write implementation and tests together (no test runs per step)
-2. **VALIDATE**: Run `npm run validate:fix` after all steps complete
+2. **VALIDATE**: Run `pnpm validate:fix` after all steps complete
 3. **FIX**: Address any failures
 
 For bug fixes during cleanup:
 
 1. **FIX**: Apply the fix
 2. **COVER**: Ensure a test covers the fixed behavior (add if missing)
-3. **VALIDATE**: Run `npm run validate:fix`
+3. **VALIDATE**: Run `pnpm validate:fix`
 
 ### Test Commands
 
-| Command                    | Use Case                                     |
-| -------------------------- | -------------------------------------------- |
-| `npm test`                 | Run all tests                                |
-| `npm run test:integration` | Primary development feedback (fast)          |
-| `npm run test:boundary`    | When developing external interfaces          |
-| `npm run test:legacy`      | Deprecated unit tests (until migrated)       |
-| `npm run validate`         | Pre-commit check (integration tests + build) |
+| Command                 | Use Case                                     |
+| ----------------------- | -------------------------------------------- |
+| `pnpm test`             | Run all tests                                |
+| `pnpm test:integration` | Primary development feedback (fast)          |
+| `pnpm test:boundary`    | When developing external interfaces          |
+| `pnpm test:legacy`      | Deprecated unit tests (until migrated)       |
+| `pnpm validate`         | Pre-commit check (integration tests + build) |
 
 **Important**: Integration tests MUST be fast (<50ms per test). They replace unit tests as the primary feedback mechanism. If tests are slow, fix the behavioral mock.
 
 ## Validation Commands
 
-| Check      | Command              | Requirement   |
-| ---------- | -------------------- | ------------- |
-| TypeScript | npm run check        | Zero errors   |
-| ESLint     | npm run lint         | Zero errors   |
-| Prettier   | npm run format:check | All formatted |
-| Tests      | npm test             | All passing   |
-| Build      | npm run build        | Completes     |
+| Check              | Command               | Requirement   |
+| ------------------ | --------------------- | ------------- |
+| TypeScript (all)   | pnpm check            | Zero errors   |
+| TypeScript node    | pnpm check:node       | Zero errors   |
+| TypeScript svelte  | pnpm check:svelte     | Zero errors   |
+| TypeScript scripts | pnpm check:scripts    | Zero errors   |
+| TypeScript ext     | pnpm check:extensions | Zero errors   |
+| ESLint             | pnpm lint             | Zero errors   |
+| Prettier           | pnpm format:check     | All formatted |
+| Tests              | pnpm test             | All passing   |
+| Build              | pnpm build            | Completes     |
 
-**Recommended**: Use `npm run validate:fix` to auto-fix formatting/linting issues before validation. This saves cycles on small errors.
+**Recommended**: Use `pnpm validate:fix` to auto-fix formatting/linting issues before validation. This saves cycles on small errors.
 
 Run all checks before marking any task complete.
+
+---
+
+## Feature Agent Workflow
+
+The `@feature` agent orchestrates the complete feature lifecycle from planning to merge.
+
+### Plan Status Transitions
+
+| Status                  | Set By     | When                                                |
+| ----------------------- | ---------- | --------------------------------------------------- |
+| `REVIEW_PENDING`        | @feature   | Plan created                                        |
+| `APPROVED`              | @implement | Starting implementation                             |
+| `IMPLEMENTATION_REVIEW` | @implement | Implementation complete, ready for review & testing |
+| `COMPLETED`             | @general   | User accepted, committed                            |
+
+### Workflow Overview
+
+```
+PLANNING → Write plan → Ask reviewers → User approves → Invoke reviewers (parallel)
+                                                              │
+                              ┌───────────────────────────────┘
+                              ▼
+                     Reviews complete → Summarize with grades → Fix issues
+                              │
+                              ▼
+                     @implement → @implementation-review → USER_TESTING
+                              │
+                              ▼
+                     User accepts → @general commits → /ship
+                              │
+                        ┌─────┴─────┬─────────┐
+                        ▼           ▼         ▼
+                     MERGED     FAILED    TIMEOUT
+                        │           │         │
+                        ▼           ▼         ▼
+                   Delete ws   User reviews  User decides
+```
+
+### /ship Command
+
+The `/ship` command creates a PR with auto-merge and waits for merge via client-side queue:
+
+1. Validates clean working tree (fails if uncommitted changes)
+2. Checks for existing PR (idempotent - resumes if PR exists)
+3. Pushes branch, creates PR with conventional commit title
+4. Enables auto-merge with merge (not squash)
+5. Runs `ship-wait.ts` script which handles:
+   - Waiting for PRs ahead in queue (FIFO by creation time)
+   - Rebasing onto main when it's our turn
+   - Waiting for CI via `gh pr checks --watch`
+   - Confirming auto-merge completion
+6. Updates local target branch on success
+
+**Outcomes:**
+
+- **MERGED**: PR merged successfully, workspace deleted by default
+- **FAILED**: PR failed (conflicts, checks, etc.) - requires user review
+- **TIMEOUT**: Still processing after 15 min - user decides wait/abort
+
+---
+
+## GitHub Repository Setup
+
+The `/ship` command requires the following GitHub configuration:
+
+### 1. Enable Auto-Delete Branches
+
+Settings → General → "Automatically delete head branches" ✓
+
+### 2. Enable Auto-Merge
+
+Settings → General → "Allow auto-merge" ✓
+
+### 3. Configure Branch Protection (Ruleset)
+
+Settings → Rules → Rulesets → New ruleset
+
+**Ruleset settings:**
+
+- Name: `main-protection`
+- Enforcement status: Active
+- Target branches: Include by pattern → `main`
+
+**Branch rules:**
+
+- ✓ Restrict deletions
+- ✓ Require a pull request before merging
+  - Required approvals: 0 (for automated workflow)
+- ✓ Require status checks to pass before merging
+  - Status checks:
+    - `CI (ubuntu-24.04)`
+    - `CI (windows-2025)`
+  - ✓ Require branches to be up to date before merging
+- ✓ Block force pushes
+
+**Note:** GitHub merge queue is not available for personal account repos.
+The `/ship` command implements a client-side queue via `.opencode/scripts/ship-wait.ts`
+that provides similar functionality:
+
+- PRs merge in FIFO order (by creation time)
+- Each PR is rebased onto main before CI runs
+- No merge conflicts at merge time
+
+### 4. Verify CI Workflow Triggers
+
+Ensure `.github/workflows/ci.yaml` has:
+
+```yaml
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+
+jobs:
+  ci:
+    if: |
+      github.event_name != 'pull_request' || 
+      github.event.pull_request.head.repo.full_name != github.repository
+```
+
+The `if` condition prevents duplicate CI runs for same-repo PRs.

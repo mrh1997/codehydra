@@ -3,6 +3,8 @@ import type { StreamingTranscriber } from "assemblyai";
 import type {
   SpeechToTextProvider,
   TranscriptHandler,
+  PartialTranscriptHandler,
+  ActivityHandler,
   ErrorHandler,
   DictationError,
 } from "./types";
@@ -16,6 +18,8 @@ export class AssemblyAIProvider implements SpeechToTextProvider {
   private client: AssemblyAI;
   private transcriber: StreamingTranscriber | null = null;
   private transcriptHandlers = createHandlerRegistry<TranscriptHandler>();
+  private partialTranscriptHandlers = createHandlerRegistry<PartialTranscriptHandler>();
+  private activityHandlers = createHandlerRegistry<ActivityHandler>();
   private errorHandlers = createHandlerRegistry<ErrorHandler>();
   private isConnected = false;
 
@@ -42,6 +46,19 @@ export class AssemblyAIProvider implements SpeechToTextProvider {
     });
 
     this.transcriber.on("turn", (turn) => {
+      // Fire activity on any turn event with transcript text
+      // This happens more frequently than end_of_turn events
+      if (turn.transcript) {
+        this.activityHandlers.forEach((h: ActivityHandler) => h());
+
+        // Emit partial transcripts for live preview (before turn ends)
+        if (!turn.end_of_turn) {
+          this.partialTranscriptHandlers.forEach((h: PartialTranscriptHandler) =>
+            h(turn.transcript)
+          );
+        }
+      }
+
       // Emit transcript when turn ends and formatting is complete
       // turn_is_formatted ensures we get punctuation/capitalization
       if (turn.transcript && turn.end_of_turn && turn.turn_is_formatted) {
@@ -111,9 +128,19 @@ export class AssemblyAIProvider implements SpeechToTextProvider {
     return this.errorHandlers.add(handler);
   }
 
+  onActivity(handler: ActivityHandler): () => void {
+    return this.activityHandlers.add(handler);
+  }
+
+  onPartialTranscript(handler: PartialTranscriptHandler): () => void {
+    return this.partialTranscriptHandlers.add(handler);
+  }
+
   dispose(): void {
     void this.disconnect();
     this.transcriptHandlers.clear();
+    this.partialTranscriptHandlers.clear();
+    this.activityHandlers.clear();
     this.errorHandlers.clear();
   }
 

@@ -25,6 +25,7 @@ import {
   type DeleteWorkspaceRequest,
   type DeleteWorkspaceResponse,
   type ExecuteCommandRequest,
+  type WorkspaceCreateRequest,
   type PluginConfig,
   type LogContext,
   COMMAND_TIMEOUT_MS,
@@ -32,10 +33,11 @@ import {
   validateSetMetadataRequest,
   validateDeleteWorkspaceRequest,
   validateExecuteCommandRequest,
+  validateWorkspaceCreateRequest,
   validateLogRequest,
 } from "../../shared/plugin-protocol";
 import { LogLevel } from "../logging/types";
-import type { WorkspaceStatus } from "../../shared/api/types";
+import type { WorkspaceStatus, Workspace, OpenCodeSession } from "../../shared/api/types";
 import { getErrorMessage } from "../errors";
 import { Path } from "../platform/path";
 
@@ -70,11 +72,11 @@ export interface ApiCallHandlers {
   getStatus(workspacePath: string): Promise<PluginResult<WorkspaceStatus>>;
 
   /**
-   * Handle getOpencodePort request.
+   * Handle getOpenCodeSession request.
    * @param workspacePath - Normalized workspace path
-   * @returns Port number (null if not running) or error
+   * @returns Session info (null if not running) or error
    */
-  getOpencodePort(workspacePath: string): Promise<PluginResult<number | null>>;
+  getOpenCodeSession(workspacePath: string): Promise<PluginResult<OpenCodeSession | null>>;
 
   /**
    * Handle restartOpencodeServer request.
@@ -119,6 +121,14 @@ export interface ApiCallHandlers {
     workspacePath: string,
     request: ExecuteCommandRequest
   ): Promise<PluginResult<unknown>>;
+
+  /**
+   * Handle create request.
+   * @param workspacePath - Normalized workspace path (caller's workspace, used to determine project)
+   * @param request - The validated create request
+   * @returns Created workspace or error
+   */
+  create(workspacePath: string, request: WorkspaceCreateRequest): Promise<PluginResult<Workspace>>;
 }
 
 // ============================================================================
@@ -229,8 +239,8 @@ export class PluginServer {
     this.setupEventHandlers();
 
     await new Promise<void>((resolve, reject) => {
-      // Listen on localhost only for security
-      this.httpServer!.listen(port, "localhost", () => {
+      // Listen on 127.0.0.1 only for security (avoid IPv4/IPv6 resolution issues)
+      this.httpServer!.listen(port, "127.0.0.1", () => {
         this.port = port;
         this.logger.info("Started", { port });
         resolve();
@@ -584,11 +594,11 @@ export class PluginServer {
     );
 
     socket.on(
-      "api:workspace:getOpencodePort",
+      "api:workspace:getOpenCodeSession",
       this.createNoArgHandler(
-        "api:workspace:getOpencodePort",
+        "api:workspace:getOpenCodeSession",
         workspacePath,
-        (h) => h.getOpencodePort
+        (h) => h.getOpenCodeSession
       )
     );
 
@@ -641,6 +651,17 @@ export class PluginServer {
         validateExecuteCommandRequest,
         (h, req) => h.executeCommand(workspacePath, req),
         (req) => ({ command: req.command })
+      )
+    );
+
+    socket.on(
+      "api:workspace:create",
+      this.createValidatedHandler<WorkspaceCreateRequest, WorkspaceCreateRequest, Workspace>(
+        "api:workspace:create",
+        workspacePath,
+        validateWorkspaceCreateRequest,
+        (h, req) => h.create(workspacePath, req),
+        (req) => ({ name: req.name, base: req.base })
       )
     );
 

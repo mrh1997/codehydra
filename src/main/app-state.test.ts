@@ -2,11 +2,11 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-import { delay } from "../services/test-utils";
+import { delay } from "@shared/test-fixtures";
 import type { IViewManager } from "./managers/view-manager.interface";
 import {
   createMockPathProvider,
-  createMockFileSystemLayer,
+  createFileSystemMock,
   createMockLoggingService,
   type PathProvider,
   type FileSystemLayer,
@@ -110,7 +110,7 @@ describe("AppState", () => {
       dataRootDir: WORKSPACES_DIR,
     });
     // Create mock FileSystemLayer and LoggingService
-    mockFileSystemLayer = createMockFileSystemLayer();
+    mockFileSystemLayer = createFileSystemMock();
     mockLoggingService = createMockLoggingService();
 
     // Set up workspace provider mock implementations with Path objects
@@ -202,7 +202,7 @@ describe("AppState", () => {
 
       expect(mockViewManager.createWorkspaceView).toHaveBeenCalledWith(
         "/project/.worktrees/feature-1",
-        expect.stringContaining("http://localhost:8080"),
+        expect.stringContaining("http://127.0.0.1:8080"),
         "/project",
         true
       );
@@ -565,7 +565,7 @@ describe("AppState", () => {
 
       const url = appState.getWorkspaceUrl("/path/to/workspace");
 
-      expect(url).toContain("http://localhost:8080");
+      expect(url).toContain("http://127.0.0.1:8080");
       expect(url).toContain("folder=");
     });
   });

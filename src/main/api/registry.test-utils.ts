@@ -203,7 +203,8 @@ function createMockCodeHydraApi(
       fetchBases: (projectId) => get("projects.fetchBases")({ projectId }),
     },
     workspaces: {
-      create: (projectId, name, base) => get("workspaces.create")({ projectId, name, base }),
+      create: (projectId, name, base, options) =>
+        get("workspaces.create")({ projectId, name, base, ...options }),
       remove: (projectId, workspaceName, keepBranch) =>
         get("workspaces.remove")({
           projectId,
@@ -215,8 +216,8 @@ function createMockCodeHydraApi(
       get: (projectId, workspaceName) => get("workspaces.get")({ projectId, workspaceName }),
       getStatus: (projectId, workspaceName) =>
         get("workspaces.getStatus")({ projectId, workspaceName }),
-      getOpencodePort: (projectId, workspaceName) =>
-        get("workspaces.getOpencodePort")({ projectId, workspaceName }),
+      getOpenCodeSession: (projectId, workspaceName) =>
+        get("workspaces.getOpenCodeSession")({ projectId, workspaceName }),
       restartOpencodeServer: (projectId, workspaceName) =>
         get("workspaces.restartOpencodeServer")({ projectId, workspaceName }),
       setMetadata: (projectId, workspaceName, key, value) =>
@@ -245,6 +246,7 @@ function createMockCodeHydraApi(
     lifecycle: {
       getState: () => get("lifecycle.getState")({}),
       setup: () => get("lifecycle.setup")({}),
+      startServices: () => get("lifecycle.startServices")({}),
       quit: () => get("lifecycle.quit")({}),
     },
     on: vi.fn().mockReturnValue(() => {}),
@@ -263,6 +265,7 @@ export function registerAllMethodsWithStubs(
   const defaultHandlers: { [P in MethodPath]: MethodHandler<P> } = {
     "lifecycle.getState": async () => "ready",
     "lifecycle.setup": async () => ({ success: true as const }),
+    "lifecycle.startServices": async () => ({ success: true as const }),
     "lifecycle.quit": async () => {},
     "projects.open": async () => createMockProject(),
     "projects.close": async () => {},
@@ -274,7 +277,7 @@ export function registerAllMethodsWithStubs(
     "workspaces.forceRemove": async () => {},
     "workspaces.get": async () => undefined,
     "workspaces.getStatus": async () => ({ isDirty: false, agent: { type: "none" as const } }),
-    "workspaces.getOpencodePort": async () => null,
+    "workspaces.getOpenCodeSession": async () => null,
     "workspaces.restartOpencodeServer": async () => 12345,
     "workspaces.setMetadata": async () => {},
     "workspaces.getMetadata": async () => ({}),

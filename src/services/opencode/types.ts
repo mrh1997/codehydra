@@ -44,19 +44,29 @@ export type ClientStatus = "idle" | "busy";
  */
 export interface Session {
   readonly id: string;
-  readonly parentID?: string;
+  readonly parentID?: string | null | undefined;
   readonly directory: string;
   readonly title?: string;
+  readonly time?: {
+    readonly created?: string;
+    readonly updated?: number;
+  };
 }
 
 // ============ Session Status ============
 
 /**
  * Session status as a discriminated union for type-safe handling.
+ *
+ * - "idle": Session is idle (waiting for user input)
+ * - "busy": Session is actively processing
+ * - "created": Session was created (status not yet known)
+ * - "deleted": Session was deleted
  */
 export type SessionStatus =
   | { readonly type: "idle"; readonly sessionId: string }
   | { readonly type: "busy"; readonly sessionId: string }
+  | { readonly type: "created"; readonly sessionId: string }
   | { readonly type: "deleted"; readonly sessionId: string };
 
 // ============ Permission Event Types ============

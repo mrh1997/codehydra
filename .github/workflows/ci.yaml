@@ -2,10 +2,16 @@ name: CI
 
 on:
   push:
+    branches-ignore: [main]
+  pull_request:
 
 jobs:
   ci:
     name: CI (${{ matrix.os }})
+    # Skip PR trigger if from same repo (push already ran)
+    if: |
+      github.event_name != 'pull_request' || 
+      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -16,38 +22,16 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
 
-      - name: Install kerberos dev dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libkrb5-dev
+      - run: pnpm validate
+      - run: pnpm test:boundary
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
+      - run: pnpm dist
 
-      # Add Git Bash to PATH on Windows so code-server's postinstall.sh can run
-      - name: Add Git Bash to PATH (Windows)
-        if: runner.os == 'Windows'
-        run: echo "C:\Program Files\Git\bin" >> $env:GITHUB_PATH
+      - run: git diff --exit-code
 
-      - run: npm ci --force
-
-      - name: Install extension dependencies
-        shell: bash
-        run: |
-          for dir in extensions/*/; do
-            echo "Installing $dir"
-            (cd "$dir" && npm ci --force)
-          done
-
-      - run: npm run validate
-      - run: npm run test:boundary
-
-      - run: npm run dist
-
-      - name: Rename Windows output for consistent naming
-        if: runner.os == 'Windows'
+      - if: runner.os == 'Windows'
         run: mv dist/win-unpacked dist/CodeHydra-win
 
       - uses: actions/upload-artifact@v4
@@ -56,42 +40,3 @@ jobs:
           path: dist/CodeHydra-*
           retention-days: 7
           if-no-files-found: error
-
-  pages:
-    name: Deploy Landing Page
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-
-    concurrency:
-      group: pages-deploy
-      cancel-in-progress: true
-
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - run: npm ci --force
-
-      - run: npm run site:build
-
-      - uses: actions/configure-pages@v5
-
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: site/dist
-
-      - id: deployment
-        uses: actions/deploy-pages@v4

@@ -18,7 +18,7 @@ import { existsSync } from "node:fs";
 import { OpenCodeClient } from "./opencode-client";
 import { withOpencode } from "./boundary-test-utils";
 import { CI_TIMEOUT_MS } from "../platform/network.test-utils";
-import { delay } from "../test-utils";
+import { delay } from "@shared/test-fixtures";
 import { SILENT_LOGGER } from "../logging";
 import { DefaultPathProvider } from "../platform/path-provider";
 import { NodePlatformInfo } from "../../main/platform-info";
@@ -40,7 +40,7 @@ describe("OpenCodeClient boundary tests", () => {
 
     if (!existsSync(binaryPath)) {
       throw new Error(
-        `OpenCode binary not found at ${binaryPath}. Run 'npm install' to download binaries.`
+        `OpenCode binary not found at ${binaryPath}. Run 'pnpm install' to download binaries.`
       );
     }
   });
@@ -75,13 +75,13 @@ describe("OpenCodeClient boundary tests", () => {
   // ===========================================================================
 
   it(
-    "fetchRootSessions returns sessions from real server",
+    "listSessions returns sessions from real server",
     async () => {
       await withOpencode({ binaryPath, mockLlmMode: "instant" }, async ({ client, sdk }) => {
         // Create a session first via SDK
         await sdk.session.create({ body: {} });
 
-        const result = await client.fetchRootSessions();
+        const result = await client.listSessions();
 
         expect(result.ok).toBe(true);
         if (result.ok) {
@@ -148,7 +148,7 @@ describe("OpenCodeClient boundary tests", () => {
     async () => {
       await withOpencode({ binaryPath, mockLlmMode: "instant" }, async ({ client }) => {
         // Fresh opencode instance has no sessions
-        const result = await client.fetchRootSessions();
+        const result = await client.listSessions();
 
         expect(result.ok).toBe(true);
         if (result.ok) {
@@ -227,8 +227,7 @@ describe("OpenCodeClient boundary tests", () => {
     "receives status events during prompt processing",
     async () => {
       await withOpencode({ binaryPath, mockLlmMode: "instant" }, async ({ client, sdk }) => {
-        // Fetch root sessions first to track them
-        await client.fetchRootSessions();
+        // Connect first to receive SSE events
         await client.connect();
 
         const statuses: ClientStatus[] = [];
@@ -236,12 +235,10 @@ describe("OpenCodeClient boundary tests", () => {
           statuses.push(status);
         });
 
-        // Create session and send prompt
-        const session = await sdk.session.create({ body: {} });
-        const sessionId = session.data!.id;
-
-        // Refetch sessions to track the new one
-        await client.fetchRootSessions();
+        // Create session via client (immediately tracked)
+        const sessionResult = await client.createSession();
+        expect(sessionResult.ok).toBe(true);
+        const sessionId = sessionResult.ok ? sessionResult.value.id : "";
 
         await sdk.session.prompt({
           path: { id: sessionId },
@@ -264,7 +261,7 @@ describe("OpenCodeClient boundary tests", () => {
     "maps retry status to busy",
     async () => {
       await withOpencode({ binaryPath, mockLlmMode: "rate-limit" }, async ({ client, sdk }) => {
-        await client.fetchRootSessions();
+        // Connect first to receive SSE events
         await client.connect();
 
         const statuses: ClientStatus[] = [];
@@ -272,10 +269,10 @@ describe("OpenCodeClient boundary tests", () => {
           statuses.push(status);
         });
 
-        // Create session
-        const session = await sdk.session.create({ body: {} });
-        const sessionId = session.data!.id;
-        await client.fetchRootSessions();
+        // Create session via client (immediately tracked)
+        const sessionResult = await client.createSession();
+        expect(sessionResult.ok).toBe(true);
+        const sessionId = sessionResult.ok ? sessionResult.value.id : "";
 
         // Send prompt - will trigger rate limit
         try {
@@ -306,17 +303,13 @@ describe("OpenCodeClient boundary tests", () => {
   it(
     "root sessions are tracked correctly",
     async () => {
-      await withOpencode({ binaryPath, mockLlmMode: "instant" }, async ({ client, sdk }) => {
-        // Create a root session
-        const session = await sdk.session.create({ body: {} });
-        const sessionId = session.data!.id;
-
-        // Fetch sessions to populate root set
-        const result = await client.fetchRootSessions();
+      await withOpencode({ binaryPath, mockLlmMode: "instant" }, async ({ client }) => {
+        // Create a root session via client (immediately tracked)
+        const result = await client.createSession();
 
         expect(result.ok).toBe(true);
         if (result.ok) {
-          expect(client.isRootSession(sessionId)).toBe(true);
+          expect(client.isRootSession(result.value.id)).toBe(true);
         }
       });
     },
@@ -327,9 +320,6 @@ describe("OpenCodeClient boundary tests", () => {
     "non-existent sessions return false for isRootSession",
     async () => {
       await withOpencode({ binaryPath, mockLlmMode: "instant" }, async ({ client }) => {
-        // Fetch sessions first to initialize
-        await client.fetchRootSessions();
-
         // Non-existent sessions should not be considered root
         expect(client.isRootSession("nonexistent-session-id")).toBe(false);
       });
@@ -347,15 +337,13 @@ describe("OpenCodeClient boundary tests", () => {
           statuses.push(status);
         });
 
-        await client.fetchRootSessions();
+        // Connect first to receive SSE events
         await client.connect();
 
-        // Create root session
-        const session = await sdk.session.create({ body: {} });
-        const sessionId = session.data!.id;
-
-        // Refetch to track the new session
-        await client.fetchRootSessions();
+        // Create root session via client (immediately tracked)
+        const rootResult = await client.createSession();
+        expect(rootResult.ok).toBe(true);
+        const sessionId = rootResult.ok ? rootResult.value.id : "";
 
         // Create a child session directly via SDK (simulates what task tool would do)
         const childSession = await sdk.session.create({
@@ -364,17 +352,21 @@ describe("OpenCodeClient boundary tests", () => {
         expect(childSession.data).toBeDefined();
         const childSessionId = childSession.data!.id;
 
+        // Wait for SSE event to process child session
+        await delay(100);
+
         // Verify root session is still tracked
         expect(client.isRootSession(sessionId)).toBe(true);
 
         // Verify child session has parentID set
         const allSessions = await sdk.session.list();
         const sessions = allSessions.data ?? [];
+        type SessionWithParent = { id: string; parentID?: string | null };
         const childSessions = sessions.filter(
-          (s) => s.parentID !== undefined && s.parentID !== null
+          (s: SessionWithParent) => s.parentID !== undefined && s.parentID !== null
         );
         expect(childSessions.length).toBeGreaterThan(0);
-        const firstChild = childSessions.find((s) => s.id === childSessionId);
+        const firstChild = childSessions.find((s: SessionWithParent) => s.id === childSessionId);
         expect(firstChild).toBeDefined();
         expect(firstChild!.parentID).toBe(sessionId);
 
@@ -383,10 +375,10 @@ describe("OpenCodeClient boundary tests", () => {
           expect(client.isRootSession(child.id)).toBe(false);
         }
 
-        // Refetch root sessions - should still only return root sessions
-        const rootSessions = await client.fetchRootSessions();
-        if (rootSessions.ok) {
-          expect(rootSessions.value.every((s) => !s.parentID)).toBe(true);
+        // listSessions returns all sessions (root and child)
+        const allSessionsResult = await client.listSessions();
+        if (allSessionsResult.ok) {
+          expect(allSessionsResult.value.length).toBeGreaterThan(0);
         }
 
         // Status changes should only reflect root session state
@@ -403,10 +395,9 @@ describe("OpenCodeClient boundary tests", () => {
         // Connect first to receive SSE events
         await client.connect();
 
-        // Track whether fetchRootSessions was effectively called via session events
-        const initialResult = await client.fetchRootSessions();
+        // Get initial session count
+        const initialResult = await client.listSessions();
         expect(initialResult.ok).toBe(true);
-
         const initialCount = initialResult.ok ? initialResult.value.length : 0;
 
         // Create a new root session - this should trigger session.created event
@@ -416,14 +407,14 @@ describe("OpenCodeClient boundary tests", () => {
         // Give time for SSE event to be processed
         await delay(200);
 
-        // Refetch to update tracking
-        const updatedResult = await client.fetchRootSessions();
-        expect(updatedResult.ok).toBe(true);
+        // SSE session.created event should have tracked it
+        expect(client.isRootSession(sessionId)).toBe(true);
 
+        // Verify session exists
+        const updatedResult = await client.listSessions();
+        expect(updatedResult.ok).toBe(true);
         if (updatedResult.ok) {
-          // New session should be tracked as root
           expect(updatedResult.value.length).toBeGreaterThan(initialCount);
-          expect(client.isRootSession(sessionId)).toBe(true);
         }
       });
     },
@@ -434,18 +425,13 @@ describe("OpenCodeClient boundary tests", () => {
     "session.created event for child session does not trigger root tracking",
     async () => {
       await withOpencode({ binaryPath, mockLlmMode: "instant" }, async ({ client, sdk }) => {
-        await client.fetchRootSessions();
+        // Connect first to receive SSE events
         await client.connect();
 
-        // Create root session
-        const session = await sdk.session.create({ body: {} });
-        const rootSessionId = session.data!.id;
-
-        await client.fetchRootSessions();
-
-        // Get initial root session count
-        const beforeResult = await client.fetchRootSessions();
-        expect(beforeResult.ok).toBe(true);
+        // Create root session via client (immediately tracked)
+        const rootResult = await client.createSession();
+        expect(rootResult.ok).toBe(true);
+        const rootSessionId = rootResult.ok ? rootResult.value.id : "";
 
         // Create a child session directly via SDK (simulates what task tool would do)
         const childSession = await sdk.session.create({
@@ -457,27 +443,18 @@ describe("OpenCodeClient boundary tests", () => {
         // Give time for SSE event to be processed
         await delay(200);
 
-        // Refetch root sessions
-        const afterResult = await client.fetchRootSessions();
-
-        if (afterResult.ok) {
-          // All sessions from fetchRootSessions should be root sessions
-          for (const s of afterResult.value) {
-            expect(client.isRootSession(s.id)).toBe(true);
-          }
-        }
-
         // Verify root session is still tracked
         expect(client.isRootSession(rootSessionId)).toBe(true);
 
         // Check that child sessions exist but are NOT in root set
         const allSessions = await sdk.session.list();
+        type SessionWithParent = { id: string; parentID?: string | null };
         const childSessions = (allSessions.data ?? []).filter(
-          (s) => s.parentID !== undefined && s.parentID !== null
+          (s: SessionWithParent) => s.parentID !== undefined && s.parentID !== null
         );
 
         expect(childSessions.length).toBeGreaterThan(0);
-        const createdChild = childSessions.find((s) => s.id === childSessionId);
+        const createdChild = childSessions.find((s: SessionWithParent) => s.id === childSessionId);
         expect(createdChild).toBeDefined();
 
         for (const child of childSessions) {
@@ -509,14 +486,13 @@ describe("OpenCodeClient boundary tests", () => {
             statuses.push(status);
           });
 
-          await client.fetchRootSessions();
+          // Connect first to receive SSE events
           await client.connect();
 
-          // Create session
-          const session = await sdk.session.create({ body: {} });
-          const sessionId = session.data!.id;
-
-          await client.fetchRootSessions();
+          // Create session via client (immediately tracked)
+          const sessionResult = await client.createSession();
+          expect(sessionResult.ok).toBe(true);
+          const sessionId = sessionResult.ok ? sessionResult.value.id : "";
 
           // Send prompt - tool call executes without permission (bash="allow")
           await sdk.session.prompt({
@@ -576,16 +552,13 @@ describe("OpenCodeClient boundary tests", () => {
             statuses.push(status);
           });
 
-          // Fetch root sessions first to track them
-          await client.fetchRootSessions();
+          // Connect first to receive SSE events
           await client.connect();
 
-          // Create session
-          const session = await sdk.session.create({ body: {} });
-          const sessionId = session.data!.id;
-
-          // Refetch to track the new session
-          await client.fetchRootSessions();
+          // Create session via client (immediately tracked)
+          const sessionResult = await client.createSession();
+          expect(sessionResult.ok).toBe(true);
+          const sessionId = sessionResult.ok ? sessionResult.value.id : "";
 
           // Send prompt - this triggers a tool call that requires permission
           const promptPromise = sdk.session.prompt({
@@ -684,16 +657,13 @@ describe("OpenCodeClient boundary tests", () => {
             statuses.push(status);
           });
 
-          // Fetch root sessions first to track them
-          await client.fetchRootSessions();
+          // Connect first to receive SSE events
           await client.connect();
 
-          // Create session
-          const session = await sdk.session.create({ body: {} });
-          const sessionId = session.data!.id;
-
-          // Refetch to track the new session
-          await client.fetchRootSessions();
+          // Create session via client (immediately tracked)
+          const sessionResult = await client.createSession();
+          expect(sessionResult.ok).toBe(true);
+          const sessionId = sessionResult.ok ? sessionResult.value.id : "";
 
           // Send prompt - this triggers a tool call that requires permission
           const promptPromise = sdk.session.prompt({
@@ -783,13 +753,13 @@ describe("OpenCodeClient boundary tests", () => {
             permissionEvents.push(event);
           });
 
-          await client.fetchRootSessions();
+          // Connect first to receive SSE events
           await client.connect();
 
-          // Create root session
-          const rootSession = await sdk.session.create({ body: {} });
-          const rootSessionId = rootSession.data!.id;
-          await client.fetchRootSessions();
+          // Create root session via client (immediately tracked)
+          const rootResult = await client.createSession();
+          expect(rootResult.ok).toBe(true);
+          const rootSessionId = rootResult.ok ? rootResult.value.id : "";
 
           // Create child session (subagent)
           const childSession = await sdk.session.create({
@@ -797,8 +767,8 @@ describe("OpenCodeClient boundary tests", () => {
           });
           const childSessionId = childSession.data!.id;
 
-          // Refetch to populate child-to-root mapping
-          await client.fetchRootSessions();
+          // Wait for SSE event to process child session mapping
+          await delay(100);
 
           // Send prompt to CHILD session - triggers bash tool requiring permission
           const promptPromise = sdk.session.prompt({
@@ -830,6 +800,83 @@ describe("OpenCodeClient boundary tests", () => {
           await promptPromise;
         }
       );
+    },
+    CI_TIMEOUT_MS
+  );
+
+  // ===========================================================================
+  // Phase 7: Initial Prompt Tests (CREATE_WORKSPACE_TOOL feature)
+  // ===========================================================================
+
+  it(
+    "session.create and session.prompt send prompt successfully",
+    async () => {
+      await withOpencode({ binaryPath, mockLlmMode: "instant" }, async ({ sdk }) => {
+        // Step 1: Create a new session
+        const sessionResult = await sdk.session.create({ body: {} });
+        expect(sessionResult.data).toBeDefined();
+        expect(typeof sessionResult.data!.id).toBe("string");
+        const sessionId = sessionResult.data!.id;
+
+        // Step 2: Send a prompt to the session
+        const promptResult = await sdk.session.prompt({
+          path: { id: sessionId },
+          body: { parts: [{ type: "text", text: "Hello, this is a test prompt" }] },
+        });
+
+        // Step 3: Verify the prompt was sent (response exists)
+        expect(promptResult.data).toBeDefined();
+
+        // Step 4: Verify session exists in list
+        const listResult = await sdk.session.list();
+        const sessions = listResult.data ?? [];
+        const ourSession = sessions.find((s) => s.id === sessionId);
+        expect(ourSession).toBeDefined();
+
+        // Step 5: Verify prompt appears in session messages
+        const messagesResult = await sdk.session.messages({ path: { id: sessionId } });
+        const messages = messagesResult.data ?? [];
+        expect(messages.length).toBeGreaterThan(0);
+
+        // Verify at least one message has info.role === "user"
+        const userMessages = messages.filter((m) => m.info.role === "user");
+        expect(userMessages.length).toBeGreaterThan(0);
+      });
+    },
+    CI_TIMEOUT_MS
+  );
+
+  it(
+    "session.prompt with agent parameter stores agent in UserMessage",
+    async () => {
+      await withOpencode({ binaryPath, mockLlmMode: "instant" }, async ({ sdk }) => {
+        // Step 1: Create a new session
+        const sessionResult = await sdk.session.create({ body: {} });
+        expect(sessionResult.data).toBeDefined();
+        const sessionId = sessionResult.data!.id;
+
+        // Step 2: Send a prompt WITH agent parameter
+        // Using "build" which is a valid default agent in OpenCode
+        const testAgent = "build";
+        await sdk.session.prompt({
+          path: { id: sessionId },
+          body: {
+            agent: testAgent,
+            parts: [{ type: "text", text: "Test prompt with agent" }],
+          },
+        });
+
+        // Step 3: Fetch messages for the session
+        const messagesResult = await sdk.session.messages({ path: { id: sessionId } });
+        const messages = messagesResult.data ?? [];
+
+        // Step 4: Find the UserMessage and verify agent field
+        // Note: SDK types may not include 'agent' property, but OpenCode stores it
+        const userMessage = messages.find((m) => m.info.role === "user");
+        expect(userMessage).toBeDefined();
+        const userInfo = userMessage!.info as { role: string; agent?: string };
+        expect(userInfo.agent).toBe(testAgent);
+      });
     },
     CI_TIMEOUT_MS
   );

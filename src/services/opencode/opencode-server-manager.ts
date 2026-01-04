@@ -18,12 +18,31 @@ import type { Logger } from "../logging";
 import type { IDisposable, Unsubscribe } from "./types";
 import { waitForHealthy } from "../platform/health-check";
 import { Path } from "../platform/path";
+import type { PromptModel } from "../../shared/api/types";
+
+/**
+ * Pending initial prompt to send when server becomes healthy.
+ */
+export interface PendingPrompt {
+  readonly prompt: string;
+  readonly agent?: string;
+  readonly model?: PromptModel;
+}
 
 /**
  * Callback types for OpenCodeServerManager.
  */
-export type ServerStartedCallback = (workspacePath: string, port: number) => void;
-export type ServerStoppedCallback = (workspacePath: string) => void;
+export type ServerStartedCallback = (
+  workspacePath: string,
+  port: number,
+  pendingPrompt: PendingPrompt | undefined
+) => void;
+/**
+ * Callback for server stopped events.
+ * @param workspacePath - Path to the workspace
+ * @param isRestart - True if this stop is part of a restart (will be followed by start)
+ */
+export type ServerStoppedCallback = (workspacePath: string, isRestart: boolean) => void;
 
 /**
  * Server entry in the manager's internal map.
@@ -47,6 +66,18 @@ export interface OpenCodeServerManagerConfig {
   healthCheckTimeoutMs?: number;
   /** Interval between health check retries in milliseconds. Default: 500 */
   healthCheckIntervalMs?: number;
+}
+
+/**
+ * Options for starting a server.
+ */
+export interface StartServerOptions {
+  /** Initial prompt to send after server becomes healthy */
+  readonly initialPrompt?: {
+    readonly prompt: string;
+    readonly agent?: string;
+    readonly model?: PromptModel;
+  };
 }
 
 /**
@@ -90,6 +121,12 @@ export class OpenCodeServerManager implements IDisposable {
   private readonly startedCallbacks = new Set<ServerStartedCallback>();
   private readonly stoppedCallbacks = new Set<ServerStoppedCallback>();
 
+  /**
+   * Pending initial prompts to send when servers become healthy.
+   * Key is normalized workspace path (via Path.toString()).
+   */
+  private readonly pendingPrompts = new Map<string, PendingPrompt>();
+
   private mcpConfig: McpConfig | null = null;
 
   constructor(
@@ -116,10 +153,21 @@ export class OpenCodeServerManager implements IDisposable {
    * Returns the port number on success.
    *
    * @param workspacePath - Absolute path to the workspace
+   * @param options - Optional start options (e.g., initialPrompt)
    * @returns Allocated port number
    * @throws Error if server fails to start or health check times out
    */
-  async startServer(workspacePath: string): Promise<number> {
+  async startServer(workspacePath: string, options?: StartServerOptions): Promise<number> {
+    // Store pending prompt if provided
+    if (options?.initialPrompt) {
+      this.setPendingPrompt(
+        workspacePath,
+        options.initialPrompt.prompt,
+        options.initialPrompt.agent,
+        options.initialPrompt.model
+      );
+    }
+
     // Check if already running/starting
     const existing = this.servers.get(workspacePath);
     if (existing) {
@@ -158,13 +206,16 @@ export class OpenCodeServerManager implements IDisposable {
     // Update the server entry to running state
     this.servers.set(workspacePath, { state: "running", port, process: proc });
 
-    // Fire callback
-    for (const callback of this.startedCallbacks) {
-      callback(workspacePath, port);
-    }
+    // Consume pending prompt before firing callback
+    const pendingPrompt = this.consumePendingPrompt(workspacePath);
 
     // pid is guaranteed to be defined since spawnServerOnPort validates it
     this.logger.info("Server started", { workspacePath, port, pid: proc.pid! });
+
+    // Fire callback with pending prompt (caller handles sending)
+    for (const callback of this.startedCallbacks) {
+      callback(workspacePath, port, pendingPrompt);
+    }
 
     return port;
   }
@@ -240,9 +291,10 @@ export class OpenCodeServerManager implements IDisposable {
    * Stop an OpenCode server for a workspace.
    *
    * @param workspacePath - Absolute path to the workspace
+   * @param isRestart - True if this stop is part of a restart operation
    * @returns StopResult indicating success or failure
    */
-  async stopServer(workspacePath: string): Promise<StopServerResult> {
+  async stopServer(workspacePath: string, isRestart = false): Promise<StopServerResult> {
     const entry = this.servers.get(workspacePath);
     if (!entry) {
       return { success: true };
@@ -284,12 +336,12 @@ export class OpenCodeServerManager implements IDisposable {
       this.servers.delete(workspacePath);
     }
 
-    // Fire callback
+    // Fire callback with isRestart flag
     for (const callback of this.stoppedCallbacks) {
-      callback(workspacePath);
+      callback(workspacePath, isRestart);
     }
 
-    this.logger.info("Server stopped", { workspacePath });
+    this.logger.info("Server stopped", { workspacePath, isRestart });
 
     return stopResult;
   }
@@ -359,8 +411,8 @@ export class OpenCodeServerManager implements IDisposable {
    * Internal method to perform the restart.
    */
   private async doRestartServer(workspacePath: string, port: number): Promise<RestartServerResult> {
-    // Stop the server first
-    const stopResult = await this.stopServer(workspacePath);
+    // Stop the server first (with isRestart=true to preserve session ID)
+    const stopResult = await this.stopServer(workspacePath, true);
     if (!stopResult.success) {
       return {
         success: false,
@@ -395,13 +447,13 @@ export class OpenCodeServerManager implements IDisposable {
     // Update the server entry to running state
     this.servers.set(workspacePath, { state: "running", port, process: proc });
 
-    // Fire callback
-    for (const callback of this.startedCallbacks) {
-      callback(workspacePath, port);
-    }
-
     // pid is guaranteed to be defined since spawnServerOnPort validates it
     this.logger.info("Server started", { workspacePath, port, pid: proc.pid! });
+
+    // Fire callback (no pending prompt for restart scenarios)
+    for (const callback of this.startedCallbacks) {
+      callback(workspacePath, port, undefined);
+    }
 
     return port;
   }
@@ -464,6 +516,56 @@ export class OpenCodeServerManager implements IDisposable {
    */
   getMcpConfig(): McpConfig | null {
     return this.mcpConfig;
+  }
+
+  /**
+   * Store a pending initial prompt to send when the server becomes healthy.
+   *
+   * @param workspacePath - Absolute path to the workspace
+   * @param prompt - The prompt text to send
+   * @param agent - Optional agent name to use
+   * @param model - Optional model to use
+   */
+  setPendingPrompt(
+    workspacePath: string,
+    prompt: string,
+    agent?: string,
+    model?: PromptModel
+  ): void {
+    const normalizedPath = new Path(workspacePath).toString();
+    // Build object conditionally for exactOptionalPropertyTypes
+    const entry: { prompt: string; agent?: string; model?: PromptModel } = { prompt };
+    if (agent !== undefined) {
+      entry.agent = agent;
+    }
+    if (model !== undefined) {
+      entry.model = model;
+    }
+    this.pendingPrompts.set(normalizedPath, entry);
+    this.logger.debug("Pending prompt stored", {
+      workspacePath: normalizedPath,
+      promptLength: prompt.length,
+      ...(agent !== undefined && { agent }),
+      ...(model !== undefined && { model: `${model.providerID}/${model.modelID}` }),
+    });
+  }
+
+  /**
+   * Consume (retrieve and remove) a pending initial prompt.
+   *
+   * @param workspacePath - Absolute path to the workspace
+   * @returns The pending prompt data, or undefined if none exists
+   */
+  consumePendingPrompt(
+    workspacePath: string
+  ): { prompt: string; agent?: string; model?: PromptModel } | undefined {
+    const normalizedPath = new Path(workspacePath).toString();
+    const pending = this.pendingPrompts.get(normalizedPath);
+    if (pending) {
+      this.pendingPrompts.delete(normalizedPath);
+      this.logger.debug("Pending prompt consumed", { workspacePath: normalizedPath });
+    }
+    return pending;
   }
 
   /**

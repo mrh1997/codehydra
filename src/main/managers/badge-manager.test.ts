@@ -5,14 +5,11 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { BadgeManager } from "./badge-manager";
 import { createMockPlatformInfo } from "../../services/platform/platform-info.test-utils";
 import { SILENT_LOGGER } from "../../services/logging";
+import { createAppLayerMock, type MockAppLayer } from "../../services/platform/app.state-mock";
 import {
-  createBehavioralAppLayer,
-  type BehavioralAppLayer,
-} from "../../services/platform/app.test-utils";
-import {
-  createBehavioralImageLayer,
-  type BehavioralImageLayer,
-} from "../../services/platform/image.test-utils";
+  createImageLayerMock,
+  type MockImageLayer,
+} from "../../services/platform/image.state-mock";
 import type { WindowManager } from "./window-manager";
 import type { ImageHandle } from "../../services/platform/types";
 
@@ -35,20 +32,20 @@ function createMockWindowManager(): MockWindowManager {
 }
 
 describe("BadgeManager", () => {
-  let appLayer: BehavioralAppLayer;
-  let imageLayer: BehavioralImageLayer;
+  let appLayer: MockAppLayer;
+  let imageLayer: MockImageLayer;
   let windowManager: MockWindowManager;
 
   beforeEach(() => {
-    appLayer = createBehavioralAppLayer();
-    imageLayer = createBehavioralImageLayer();
+    appLayer = createAppLayerMock();
+    imageLayer = createImageLayerMock();
     windowManager = createMockWindowManager();
   });
 
   describe("updateBadge (darwin)", () => {
     it("shows filled circle for all-working state", () => {
       const platformInfo = createMockPlatformInfo({ platform: "darwin" });
-      appLayer = createBehavioralAppLayer({ platform: "darwin" });
+      appLayer = createAppLayerMock({ platform: "darwin" });
 
       const manager = new BadgeManager(
         platformInfo,
@@ -60,12 +57,12 @@ describe("BadgeManager", () => {
 
       manager.updateBadge("all-working");
 
-      expect(appLayer._getState().dockSetBadgeCalls).toEqual(["●"]);
+      expect(appLayer).toHaveDockBadge("●");
     });
 
     it("shows half circle for mixed state", () => {
       const platformInfo = createMockPlatformInfo({ platform: "darwin" });
-      appLayer = createBehavioralAppLayer({ platform: "darwin" });
+      appLayer = createAppLayerMock({ platform: "darwin" });
 
       const manager = new BadgeManager(
         platformInfo,
@@ -77,12 +74,12 @@ describe("BadgeManager", () => {
 
       manager.updateBadge("mixed");
 
-      expect(appLayer._getState().dockSetBadgeCalls).toEqual(["◐"]);
+      expect(appLayer).toHaveDockBadge("◐");
     });
 
     it("clears badge for none state", () => {
       const platformInfo = createMockPlatformInfo({ platform: "darwin" });
-      appLayer = createBehavioralAppLayer({ platform: "darwin" });
+      appLayer = createAppLayerMock({ platform: "darwin" });
 
       const manager = new BadgeManager(
         platformInfo,
@@ -94,7 +91,7 @@ describe("BadgeManager", () => {
 
       manager.updateBadge("none");
 
-      expect(appLayer._getState().dockSetBadgeCalls).toEqual([""]);
+      expect(appLayer).toHaveDockBadge("");
     });
   });
 
@@ -113,7 +110,7 @@ describe("BadgeManager", () => {
       manager.updateBadge("all-working");
 
       // Verify image was created
-      expect(imageLayer._getState().images.size).toBe(1);
+      expect(imageLayer).toHaveImages([{ id: "image-1" }]);
       expect(windowManager.setOverlayIconCalls).toHaveLength(1);
       expect(windowManager.setOverlayIconCalls[0]?.description).toBe("All workspaces working");
     });
@@ -131,7 +128,7 @@ describe("BadgeManager", () => {
 
       manager.updateBadge("mixed");
 
-      expect(imageLayer._getState().images.size).toBe(1);
+      expect(imageLayer).toHaveImages([{ id: "image-1" }]);
       expect(windowManager.setOverlayIconCalls).toHaveLength(1);
       expect(windowManager.setOverlayIconCalls[0]?.description).toBe("Some workspaces ready");
     });
@@ -150,7 +147,7 @@ describe("BadgeManager", () => {
       manager.updateBadge("none");
 
       // No image created for "none"
-      expect(imageLayer._getState().images.size).toBe(0);
+      expect(imageLayer).toHaveImages([]);
       expect(windowManager.setOverlayIconCalls).toHaveLength(1);
       expect(windowManager.setOverlayIconCalls[0]?.image).toBeNull();
       expect(windowManager.setOverlayIconCalls[0]?.description).toBe("");
@@ -160,7 +157,7 @@ describe("BadgeManager", () => {
   describe("updateBadge (linux)", () => {
     it("sets badge count to 1 for all-working state", () => {
       const platformInfo = createMockPlatformInfo({ platform: "linux" });
-      appLayer = createBehavioralAppLayer({ platform: "linux" });
+      appLayer = createAppLayerMock({ platform: "linux" });
 
       const manager = new BadgeManager(
         platformInfo,
@@ -172,12 +169,12 @@ describe("BadgeManager", () => {
 
       manager.updateBadge("all-working");
 
-      expect(appLayer._getState().setBadgeCountCalls).toEqual([1]);
+      expect(appLayer).toHaveBadgeCount(1);
     });
 
     it("sets badge count to 1 for mixed state", () => {
       const platformInfo = createMockPlatformInfo({ platform: "linux" });
-      appLayer = createBehavioralAppLayer({ platform: "linux" });
+      appLayer = createAppLayerMock({ platform: "linux" });
 
       const manager = new BadgeManager(
         platformInfo,
@@ -189,12 +186,12 @@ describe("BadgeManager", () => {
 
       manager.updateBadge("mixed");
 
-      expect(appLayer._getState().setBadgeCountCalls).toEqual([1]);
+      expect(appLayer).toHaveBadgeCount(1);
     });
 
     it("clears badge for none state", () => {
       const platformInfo = createMockPlatformInfo({ platform: "linux" });
-      appLayer = createBehavioralAppLayer({ platform: "linux" });
+      appLayer = createAppLayerMock({ platform: "linux" });
 
       const manager = new BadgeManager(
         platformInfo,
@@ -206,7 +203,7 @@ describe("BadgeManager", () => {
 
       manager.updateBadge("none");
 
-      expect(appLayer._getState().setBadgeCountCalls).toEqual([0]);
+      expect(appLayer).toHaveBadgeCount(0);
     });
   });
 
@@ -224,10 +221,7 @@ describe("BadgeManager", () => {
 
       manager.updateBadge("all-working");
 
-      const state = imageLayer._getState();
-      expect(state.images.size).toBe(1);
-      const image = state.images.get("image-1");
-      expect(image?.size).toEqual({ width: 16, height: 16 });
+      expect(imageLayer).toHaveImage("image-1", { size: { width: 16, height: 16 } });
     });
 
     it("creates different images for different states", () => {
@@ -245,7 +239,7 @@ describe("BadgeManager", () => {
       manager.updateBadge("mixed");
 
       // Should create 2 different images
-      expect(imageLayer._getState().images.size).toBe(2);
+      expect(imageLayer).toHaveImages([{ id: "image-1" }, { id: "image-2" }]);
     });
   });
 
@@ -267,7 +261,7 @@ describe("BadgeManager", () => {
       manager.updateBadge("all-working");
 
       // Should only create image once
-      expect(imageLayer._getState().images.size).toBe(1);
+      expect(imageLayer).toHaveImages([{ id: "image-1" }]);
 
       // But all calls should update the overlay
       expect(windowManager.setOverlayIconCalls).toHaveLength(3);
@@ -288,7 +282,7 @@ describe("BadgeManager", () => {
       manager.updateBadge("mixed");
 
       // Should create 2 different images
-      expect(imageLayer._getState().images.size).toBe(2);
+      expect(imageLayer).toHaveImages([{ id: "image-1" }, { id: "image-2" }]);
     });
   });
 
@@ -306,10 +300,7 @@ describe("BadgeManager", () => {
 
       manager.updateBadge("mixed");
 
-      const state = imageLayer._getState();
-      const image = state.images.get("image-1");
-      expect(image).toBeDefined();
-      expect(image?.isEmpty).toBe(false);
+      expect(imageLayer).toHaveImage("image-1", { isEmpty: false });
     });
   });
 
@@ -327,10 +318,7 @@ describe("BadgeManager", () => {
 
       manager.updateBadge("all-working");
 
-      const state = imageLayer._getState();
-      const image = state.images.get("image-1");
-      expect(image).toBeDefined();
-      expect(image?.isEmpty).toBe(false);
+      expect(imageLayer).toHaveImage("image-1", { isEmpty: false });
     });
   });
 
@@ -351,13 +339,13 @@ describe("BadgeManager", () => {
       manager.updateBadge("mixed");
 
       // Verify images are cached
-      expect(imageLayer._getState().images.size).toBe(2);
+      expect(imageLayer).toHaveImages([{ id: "image-1" }, { id: "image-2" }]);
 
       // Dispose should release all cached images
       manager.dispose();
 
       // Verify all images have been released
-      expect(imageLayer._getState().images.size).toBe(0);
+      expect(imageLayer).toHaveImages([]);
     });
 
     it("clears overlay on dispose when connected to status manager", () => {
@@ -411,7 +399,7 @@ describe("BadgeManager", () => {
       manager.dispose();
       manager.dispose();
 
-      expect(imageLayer._getState().images.size).toBe(0);
+      expect(imageLayer).toHaveImages([]);
     });
   });
 });

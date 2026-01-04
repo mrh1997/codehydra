@@ -25,8 +25,14 @@ import {
 import type { IViewManager } from "./managers/view-manager.interface";
 import type { WorkspacePath } from "../shared/ipc";
 import type { Project, ProjectId } from "../shared/api/types";
-import type { AgentStatusManager } from "../services/opencode/agent-status-manager";
-import type { OpenCodeServerManager } from "../services/opencode/opencode-server-manager";
+import {
+  OpenCodeProvider,
+  type AgentStatusManager,
+} from "../services/opencode/agent-status-manager";
+import type {
+  OpenCodeServerManager,
+  PendingPrompt,
+} from "../services/opencode/opencode-server-manager";
 import type { McpServerManager } from "../services/mcp-server";
 import { getErrorMessage } from "../shared/error-utils";
 import { toIpcWorkspaces } from "./api/workspace-conversion";
@@ -111,21 +117,107 @@ export class AppState {
     this.serverManager = manager;
 
     // Wire server callbacks to agent status manager
-    manager.onServerStarted((workspacePath, port) => {
-      if (this.agentStatusManager) {
-        void this.agentStatusManager.initWorkspace(workspacePath as WorkspacePath, port);
-      }
+    manager.onServerStarted((workspacePath, port, pendingPrompt) => {
+      void this.handleServerStarted(workspacePath as WorkspacePath, port, pendingPrompt);
     });
 
-    manager.onServerStopped((workspacePath) => {
+    manager.onServerStopped((workspacePath, isRestart) => {
       if (this.agentStatusManager) {
-        this.agentStatusManager.removeWorkspace(workspacePath as WorkspacePath);
+        if (isRestart) {
+          // For restart: disconnect but keep provider
+          this.agentStatusManager.disconnectWorkspace(workspacePath as WorkspacePath);
+        } else {
+          // For permanent stop: remove workspace completely
+          this.agentStatusManager.removeWorkspace(workspacePath as WorkspacePath);
+        }
       }
       // Clear from MCP seen set so onFirstRequest fires again after restart
       if (this.mcpServerManager) {
         this.mcpServerManager.clearWorkspace(workspacePath);
       }
     });
+  }
+
+  /**
+   * Handle server started event.
+   * For restart: reconnects existing provider.
+   * For first start: creates provider, registers with AgentStatusManager.
+   * Sends initial prompt if provided.
+   */
+  private async handleServerStarted(
+    workspacePath: WorkspacePath,
+    port: number,
+    pendingPrompt: PendingPrompt | undefined
+  ): Promise<void> {
+    if (!this.agentStatusManager) {
+      return;
+    }
+
+    // Check if this is a restart (provider already exists from disconnect)
+    if (this.agentStatusManager.hasProvider(workspacePath)) {
+      // Restart: reconnect existing provider
+      try {
+        await this.agentStatusManager.reconnectWorkspace(workspacePath);
+        this.logger.info("Reconnected OpenCode provider after restart", { workspacePath, port });
+      } catch (error) {
+        this.logger.error(
+          "Failed to reconnect OpenCode provider",
+          { workspacePath, port },
+          error instanceof Error ? error : undefined
+        );
+      }
+      return;
+    }
+
+    // First start: create new provider
+    const provider = new OpenCodeProvider(
+      workspacePath,
+      this.agentStatusManager.getLogger(),
+      this.agentStatusManager.getSdkFactory()
+    );
+
+    try {
+      // Initialize client (connects SSE)
+      await provider.initializeClient(port);
+
+      // Fetch initial status
+      await provider.fetchStatus();
+
+      // Register with AgentStatusManager
+      this.agentStatusManager.addProvider(workspacePath, provider);
+
+      // Send initial prompt if provided
+      if (pendingPrompt) {
+        const sessionResult = await provider.createSession();
+        if (sessionResult.ok) {
+          const promptResult = await provider.sendPrompt(
+            sessionResult.value.id,
+            pendingPrompt.prompt,
+            {
+              ...(pendingPrompt.agent !== undefined && { agent: pendingPrompt.agent }),
+              ...(pendingPrompt.model !== undefined && { model: pendingPrompt.model }),
+            }
+          );
+          if (!promptResult.ok) {
+            this.logger.error("Failed to send initial prompt", {
+              workspacePath,
+              error: promptResult.error.message,
+            });
+          }
+        } else {
+          this.logger.error("Failed to create session for initial prompt", {
+            workspacePath,
+            error: sessionResult.error.message,
+          });
+        }
+      }
+    } catch (error) {
+      this.logger.error(
+        "Failed to initialize OpenCode provider",
+        { workspacePath, port },
+        error instanceof Error ? error : undefined
+      );
+    }
   }
 
   /**
@@ -439,8 +531,13 @@ export class AppState {
    *
    * @param projectPathInput - Path to the project
    * @param workspace - The internal workspace to add (with Path-based path)
+   * @param options - Optional options (e.g., initialPrompt)
    */
-  addWorkspace(projectPathInput: string, workspace: InternalWorkspace): void {
+  addWorkspace(
+    projectPathInput: string,
+    workspace: InternalWorkspace,
+    options?: { initialPrompt?: { prompt: string; agent?: string } }
+  ): void {
     const normalizedKey = new Path(projectPathInput).toString();
     const openProject = this.openProjects.get(normalizedKey);
     if (!openProject) {
@@ -452,6 +549,10 @@ export class AppState {
     const url = this.getWorkspaceUrl(workspacePathStr);
     this.viewManager.createWorkspaceView(workspacePathStr, url, normalizedKey, true);
 
+    // Preload the URL so VS Code starts loading in the background
+    // This ensures the workspace is ready when the user switches to it
+    this.viewManager.preloadWorkspaceUrl(workspacePathStr);
+
     // Update internal project state
     const updatedProject: OpenProject = {
       ...openProject,
@@ -461,22 +562,30 @@ export class AppState {
     this.openProjects.set(normalizedKey, updatedProject);
 
     // Start OpenCode server for the workspace (agent status tracking is wired via callback)
-    this.startOpenCodeServerAsync(workspacePathStr);
+    this.startOpenCodeServerAsync(workspacePathStr, options?.initialPrompt);
   }
 
   /**
    * Start OpenCode server asynchronously with error logging.
    * Fire-and-forget pattern - failures are logged but don't block.
+   *
+   * @param workspacePath - Path to the workspace
+   * @param initialPrompt - Optional initial prompt to send after server starts
    */
-  private startOpenCodeServerAsync(workspacePath: string): void {
+  private startOpenCodeServerAsync(
+    workspacePath: string,
+    initialPrompt?: { prompt: string; agent?: string }
+  ): void {
     if (this.serverManager) {
-      void this.serverManager.startServer(workspacePath).catch((err: unknown) => {
-        this.logger.error(
-          "Failed to start OpenCode server",
-          { workspacePath },
-          err instanceof Error ? err : undefined
-        );
-      });
+      void this.serverManager
+        .startServer(workspacePath, initialPrompt ? { initialPrompt } : undefined)
+        .catch((err: unknown) => {
+          this.logger.error(
+            "Failed to start OpenCode server",
+            { workspacePath },
+            err instanceof Error ? err : undefined
+          );
+        });
     }
   }
 

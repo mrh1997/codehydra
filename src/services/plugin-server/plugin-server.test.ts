@@ -9,7 +9,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { PluginServer, type ApiCallHandlers } from "./plugin-server";
 import { COMMAND_TIMEOUT_MS, SHUTDOWN_DISCONNECT_TIMEOUT_MS } from "../../shared/plugin-protocol";
-import { createMockPortManager } from "../platform/network.test-utils";
+import { createPortManagerMock } from "../platform/network.test-utils";
 import { SILENT_LOGGER } from "../logging/logging.test-utils";
 
 describe("PluginServer", () => {
@@ -24,10 +24,10 @@ describe("PluginServer", () => {
 
   describe("onConnect", () => {
     let server: PluginServer;
-    let mockPortManager: ReturnType<typeof createMockPortManager>;
+    let mockPortManager: ReturnType<typeof createPortManagerMock>;
 
     beforeEach(() => {
-      mockPortManager = createMockPortManager({ findFreePort: { port: 3000 } });
+      mockPortManager = createPortManagerMock([3000]);
       server = new PluginServer(mockPortManager, SILENT_LOGGER);
     });
 
@@ -81,7 +81,7 @@ describe("PluginServer", () => {
 
   describe("isDevelopment option", () => {
     it("accepts isDevelopment: true option", () => {
-      const mockPortManager = createMockPortManager({ findFreePort: { port: 3000 } });
+      const mockPortManager = createPortManagerMock([3000]);
       const server = new PluginServer(mockPortManager, SILENT_LOGGER, {
         isDevelopment: true,
       });
@@ -91,7 +91,7 @@ describe("PluginServer", () => {
     });
 
     it("accepts isDevelopment: false option", () => {
-      const mockPortManager = createMockPortManager({ findFreePort: { port: 3000 } });
+      const mockPortManager = createPortManagerMock([3000]);
       const server = new PluginServer(mockPortManager, SILENT_LOGGER, {
         isDevelopment: false,
       });
@@ -101,7 +101,7 @@ describe("PluginServer", () => {
     });
 
     it("defaults to isDevelopment: false when not specified", () => {
-      const mockPortManager = createMockPortManager({ findFreePort: { port: 3000 } });
+      const mockPortManager = createPortManagerMock([3000]);
       // No isDevelopment option provided
       const server = new PluginServer(mockPortManager, SILENT_LOGGER);
 
@@ -118,10 +118,10 @@ describe("PluginServer", () => {
 
   describe("sendExtensionHostShutdown", () => {
     let server: PluginServer;
-    let mockPortManager: ReturnType<typeof createMockPortManager>;
+    let mockPortManager: ReturnType<typeof createPortManagerMock>;
 
     beforeEach(() => {
-      mockPortManager = createMockPortManager({ findFreePort: { port: 3000 } });
+      mockPortManager = createPortManagerMock([3000]);
       server = new PluginServer(mockPortManager, SILENT_LOGGER);
     });
 
@@ -193,10 +193,10 @@ describe("PluginServer", () => {
 
   describe("onApiCall", () => {
     let server: PluginServer;
-    let mockPortManager: ReturnType<typeof createMockPortManager>;
+    let mockPortManager: ReturnType<typeof createPortManagerMock>;
 
     beforeEach(() => {
-      mockPortManager = createMockPortManager({ findFreePort: { port: 3000 } });
+      mockPortManager = createPortManagerMock([3000]);
       server = new PluginServer(mockPortManager, SILENT_LOGGER);
     });
 
@@ -209,11 +209,13 @@ describe("PluginServer", () => {
         getStatus: vi
           .fn()
           .mockResolvedValue({ success: true, data: { isDirty: false, agent: { type: "none" } } }),
-        getOpencodePort: vi.fn().mockResolvedValue({ success: true, data: null }),
+        getOpenCodeSession: vi.fn().mockResolvedValue({ success: true, data: null }),
+        restartOpencodeServer: vi.fn().mockResolvedValue({ success: true, data: 14001 }),
         getMetadata: vi.fn().mockResolvedValue({ success: true, data: {} }),
         setMetadata: vi.fn().mockResolvedValue({ success: true, data: undefined }),
         delete: vi.fn().mockResolvedValue({ success: true, data: { started: true } }),
         executeCommand: vi.fn().mockResolvedValue({ success: true, data: undefined }),
+        create: vi.fn().mockResolvedValue({ success: true, data: {} }),
       };
 
       // Should not throw
@@ -225,11 +227,13 @@ describe("PluginServer", () => {
         getStatus: vi
           .fn()
           .mockResolvedValue({ success: true, data: { isDirty: false, agent: { type: "none" } } }),
-        getOpencodePort: vi.fn().mockResolvedValue({ success: true, data: null }),
+        getOpenCodeSession: vi.fn().mockResolvedValue({ success: true, data: null }),
+        restartOpencodeServer: vi.fn().mockResolvedValue({ success: true, data: 14001 }),
         getMetadata: vi.fn().mockResolvedValue({ success: true, data: {} }),
         setMetadata: vi.fn().mockResolvedValue({ success: true, data: undefined }),
         delete: vi.fn().mockResolvedValue({ success: true, data: { started: true } }),
         executeCommand: vi.fn().mockResolvedValue({ success: true, data: undefined }),
+        create: vi.fn().mockResolvedValue({ success: true, data: {} }),
       };
 
       const handlers2: ApiCallHandlers = {
@@ -240,11 +244,15 @@ describe("PluginServer", () => {
             agent: { type: "busy", counts: { idle: 0, busy: 1, total: 1 } },
           },
         }),
-        getOpencodePort: vi.fn().mockResolvedValue({ success: true, data: 12345 }),
+        getOpenCodeSession: vi
+          .fn()
+          .mockResolvedValue({ success: true, data: { port: 12345, sessionId: "session-abc" } }),
+        restartOpencodeServer: vi.fn().mockResolvedValue({ success: true, data: 14001 }),
         getMetadata: vi.fn().mockResolvedValue({ success: true, data: { note: "test" } }),
         setMetadata: vi.fn().mockResolvedValue({ success: true, data: undefined }),
         delete: vi.fn().mockResolvedValue({ success: true, data: { started: true } }),
         executeCommand: vi.fn().mockResolvedValue({ success: true, data: undefined }),
+        create: vi.fn().mockResolvedValue({ success: true, data: {} }),
       };
 
       server.onApiCall(handlers1);
@@ -253,23 +261,27 @@ describe("PluginServer", () => {
       // No error - second registration replaces first
     });
 
-    it("should register getOpencodePort handler on socket connection", () => {
+    it("should register getOpenCodeSession handler on socket connection", () => {
       const handlers: ApiCallHandlers = {
         getStatus: vi
           .fn()
           .mockResolvedValue({ success: true, data: { isDirty: false, agent: { type: "none" } } }),
-        getOpencodePort: vi.fn().mockResolvedValue({ success: true, data: 12345 }),
+        getOpenCodeSession: vi
+          .fn()
+          .mockResolvedValue({ success: true, data: { port: 12345, sessionId: "session-abc" } }),
+        restartOpencodeServer: vi.fn().mockResolvedValue({ success: true, data: 14001 }),
         getMetadata: vi.fn().mockResolvedValue({ success: true, data: {} }),
         setMetadata: vi.fn().mockResolvedValue({ success: true, data: undefined }),
         delete: vi.fn().mockResolvedValue({ success: true, data: { started: true } }),
         executeCommand: vi.fn().mockResolvedValue({ success: true, data: undefined }),
+        create: vi.fn().mockResolvedValue({ success: true, data: {} }),
       };
 
       // Should not throw - handlers are registered
       expect(() => server.onApiCall(handlers)).not.toThrow();
 
       // Verify handler is in the handlers object
-      expect(handlers.getOpencodePort).toBeDefined();
+      expect(handlers.getOpenCodeSession).toBeDefined();
     });
   });
 });

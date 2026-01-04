@@ -6,16 +6,16 @@ CodeHydra uses behavior-driven testing with vitest. Tests verify **behavior** th
 
 ## Quick Reference
 
-| Task                      | Command                    | Section                                             |
-| ------------------------- | -------------------------- | --------------------------------------------------- |
-| Run all tests             | `npm test`                 | [Test Commands](#test-commands)                     |
-| Run integration tests     | `npm run test:integration` | [Test Commands](#test-commands)                     |
-| Run boundary tests        | `npm run test:boundary`    | [Test Commands](#test-commands)                     |
-| Run deprecated unit tests | `npm run test:legacy`      | [Test Commands](#test-commands)                     |
-| Pre-commit validation     | `npm run validate`         | [Test Commands](#test-commands)                     |
-| Decide which test type    | See decision guide         | [Decision Guide](#decision-guide)                   |
-| Create test git repo      | `createTestGitRepo()`      | [Test Helpers](#test-helpers)                       |
-| Create behavioral mock    | `createBehavioralX()`      | [Behavioral Mock Pattern](#behavioral-mock-pattern) |
+| Task                      | Command                 | Section                                             |
+| ------------------------- | ----------------------- | --------------------------------------------------- |
+| Run all tests             | `pnpm test`             | [Test Commands](#test-commands)                     |
+| Run integration tests     | `pnpm test:integration` | [Test Commands](#test-commands)                     |
+| Run boundary tests        | `pnpm test:boundary`    | [Test Commands](#test-commands)                     |
+| Run deprecated unit tests | `pnpm test:legacy`      | [Test Commands](#test-commands)                     |
+| Pre-commit validation     | `pnpm validate`         | [Test Commands](#test-commands)                     |
+| Decide which test type    | See decision guide      | [Decision Guide](#decision-guide)                   |
+| Create test git repo      | `createTestGitRepo()`   | [Test Helpers](#test-helpers)                       |
+| Create behavioral mock    | `createBehavioralX()`   | [Behavioral Mock Pattern](#behavioral-mock-pattern) |
 
 ---
 
@@ -93,79 +93,6 @@ describe("SimpleGitClient", () => {
   });
 });
 ```
-
-### Electron Boundary Tests
-
-Electron boundary tests (Shell and Platform layers) require special handling since they need a display for window creation.
-
-**Naming Convention**: Boundary tests use the `*.boundary.test.ts` naming pattern (e.g., `window.boundary.test.ts`, `view.boundary.test.ts`). This distinguishes them from `*.integration.test.ts` files which use behavioral mocks instead of real external systems.
-
-**xvfb Setup for Linux CI:**
-
-The test suite uses programmatic xvfb setup for Linux CI environments via `src/test/setup-display.ts`:
-
-```typescript
-// Automatic virtual display setup (Linux CI only)
-// - Uses xvfb npm package (in optionalDependencies)
-// - No manual xvfb-run wrapper needed
-// - npm test just works on all platforms
-```
-
-**All test windows use `show: false`:**
-
-```typescript
-// Boundary tests create invisible windows
-const handle = windowLayer.createWindow({
-  width: 800,
-  height: 600,
-  show: false, // Never visible, even on developer machines
-});
-```
-
-**Platform-Specific Test Skipping:**
-
-Use `it.skipIf()` for tests that only work on specific platforms:
-
-```typescript
-import { platform } from "os";
-
-// macOS-only test
-it.skipIf(platform() !== "darwin")("dock.setBadge sets badge text", async () => {
-  appLayer.dock?.setBadge("42");
-  // ...
-});
-
-// Windows-only test
-it.skipIf(platform() !== "win32")("setOverlayIcon shows on taskbar", async () => {
-  windowLayer.setOverlayIcon(handle, imageHandle, "Notification");
-  // ...
-});
-
-// Linux-only test
-it.skipIf(platform() !== "linux")("uses Unity badge count", async () => {
-  // ...
-});
-```
-
-**Cleanup Requirements:**
-
-Each Electron boundary test file MUST clean up resources:
-
-```typescript
-describe("WindowLayer", () => {
-  let windowLayer: DefaultWindowLayer;
-
-  beforeEach(() => {
-    windowLayer = new DefaultWindowLayer(imageLayer, logger);
-  });
-
-  afterEach(() => {
-    windowLayer.destroyAll(); // Clean up all windows
-  });
-});
-```
-
----
 
 ### Integration Tests (\*.integration.test.ts)
 
@@ -299,7 +226,7 @@ describe("generateProjectId", () => {
 
 **Status**: Existing unit tests remain until migrated per-module.
 
-**Command**: `npm run test:legacy`
+**Command**: `pnpm test:legacy`
 
 Unit tests that mock dependencies and verify implementation calls are being replaced by integration tests with behavioral mocks. Existing unit tests will be migrated to integration tests on a per-module basis. Each migration requires a separate plan with user approval.
 
@@ -362,71 +289,356 @@ expect(mockGit.createWorktree).toHaveBeenCalledWith("/project", "feat-1", "main"
 ### Good: Behavioral Mock
 
 ```typescript
+import { createMockGitClient } from "./git/git-client.state-mock";
+
 // This tests actual behavior
-const mockGit = createBehavioralGitClient({
-  repositories: new Map([["/project", { branches: ["main", "develop"], worktrees: [] }]]),
+const mockGit = createMockGitClient({
+  repositories: {
+    "/project": { branches: ["main", "develop"], currentBranch: "main" },
+  },
 });
 
-// Mock has in-memory state - createWorktree actually adds to worktrees list
-await api.workspaces.create("/project", "feat-1", "main");
+// Mock has in-memory state - createBranch actually adds to branches set
+await mockGit.createBranch(new Path("/project"), "feat-1", "main");
 
-// Verify BEHAVIOR - the worktree exists now
-const project = await api.projects.get("/project");
-expect(project.workspaces).toContainEqual(expect.objectContaining({ name: "feat-1" }));
+// Verify BEHAVIOR - the branch exists now
+expect(mockGit).toHaveBranch("/project", "feat-1");
 
 // Verify BEHAVIOR - can't create duplicate
-await expect(api.workspaces.create("/project", "feat-1", "main")).rejects.toThrow();
+await expect(mockGit.createBranch(new Path("/project"), "feat-1", "main")).rejects.toThrow();
 ```
 
 ### State Inspection
 
-Behavioral mocks should expose state inspection utilities:
+Behavioral mocks expose state inspection via the `$` property and custom matchers:
 
 ```typescript
-const mockFs = createBehavioralFileSystem({ files: new Map() });
-await mockFs.writeFile("/data/config.json", '{"key": "value"}');
+import { createFileSystemMock, directory } from "../platform/filesystem.state-mock";
 
-// Direct state inspection
-expect(mockFs._getState().files.has("/data/config.json")).toBe(true);
+const mock = createFileSystemMock({ entries: { "/data": directory() } });
+await mock.writeFile("/data/config.json", '{"key": "value"}');
+
+// State access via $ property
+expect(mock.$.entries.has("/data/config.json")).toBe(true);
+
+// Custom matchers for cleaner assertions
+expect(mock).toHaveFile("/data/config.json", '{"key": "value"}');
+expect(mock).toHaveDirectory("/data");
 ```
 
 ### Cross-Platform Requirements
 
-Behavioral mocks must handle platform differences:
+Behavioral mocks must handle platform differences. The `createFileSystemMock` factory handles path normalization automatically:
 
 ```typescript
-function createBehavioralFileSystem(options?: {
-  files?: Map<string, string | Buffer>;
-  directories?: Set<string>;
-}): FileSystemLayer {
-  const files = new Map(options?.files ?? []);
-  const dirs = new Set(options?.directories ?? []);
+import { createFileSystemMock, file, directory, symlink } from "../platform/filesystem.state-mock";
 
-  // Normalize paths for cross-platform compatibility
-  const normalizePath = (p: string) => path.normalize(p);
+// Create mock with initial filesystem state
+const mock = createFileSystemMock({
+  entries: {
+    "/app": directory(),
+    "/app/config.json": file('{"debug": true}'),
+    "/app/bin/run.sh": file("#!/bin/bash\necho hi", { executable: true }),
+    "/app/current": symlink("/app/v1"),
+  },
+});
 
-  return {
-    async readFile(filePath, encoding) {
-      const normalized = normalizePath(filePath);
-      const content = files.get(normalized);
-      if (!content) {
-        const error = new Error(`ENOENT: no such file: ${filePath}`);
-        (error as NodeJS.ErrnoException).code = "ENOENT";
-        throw error;
-      }
-      return encoding ? content.toString() : content;
-    },
-    // ... other methods with path normalization
-    _getState: () => ({ files: new Map(files), dirs: new Set(dirs) }),
-  };
-}
+// Paths are normalized automatically (handles Windows backslashes, case sensitivity)
+await mock.readFile("/APP/config.json"); // Works on case-insensitive platforms
+await mock.readFile("C:\\app\\config.json"); // Normalized to c:/app/config.json
+
+// State access via $ property
+console.log(mock.$.entries.size); // 4
 ```
 
 **Key requirements**:
 
-- Use `path.join()` for path construction
-- Use `path.normalize()` for path comparison
-- Throw errors with correct `code` property (ENOENT, EEXIST, etc.)
+- Use `createFileSystemMock` from `filesystem.state-mock.ts`
+- Paths are normalized via `Path` class (POSIX format, case-normalized on Windows)
+- Errors thrown as `FileSystemError` with typed error codes (ENOENT, EEXIST, etc.)
+
+---
+
+## State Mock Pattern
+
+State mocks provide a standardized interface for behavioral mocks with type-safe matchers. This formalizes the existing `_getState()` pattern into a consistent API.
+
+### File Naming Convention
+
+State mock files use the `*.state-mock.ts` suffix:
+
+- `src/services/platform/filesystem.state-mock.ts`
+- `src/services/git/git-client.state-mock.ts`
+
+### Core Interfaces
+
+All state mocks implement these interfaces from `src/test/state-mock.ts`:
+
+```typescript
+// Base interface for mock state - pure data, logic belongs in matchers
+interface MockState {
+  snapshot(): Snapshot; // Capture state for comparison
+  toString(): string; // Human-readable state for error messages
+}
+
+// Mock with inspectable state via the `$` property
+interface MockWithState<TState extends MockState> {
+  readonly $: TState;
+}
+```
+
+### Snapshot and `toBeUnchanged()` Matcher
+
+The base `toBeUnchanged(snapshot)` matcher compares state before and after an action:
+
+```typescript
+it("does not modify state when branch does not exist", async () => {
+  const gitMock = createMockGitClient({
+    repositories: new Map([["/project", { branches: ["main"] }]]),
+  });
+
+  // Capture state before action
+  const snapshot = gitMock.$.snapshot();
+
+  // Action should fail
+  await expect(gitMock.addWorktree(/* ... */)).rejects.toThrow();
+
+  // State should be unchanged
+  expect(gitMock).toBeUnchanged(snapshot);
+});
+
+it("creates worktree when branch exists", async () => {
+  const gitMock = createMockGitClient(/* ... */);
+  const snapshot = gitMock.$.snapshot();
+
+  await gitMock.addWorktree(/* ... */);
+
+  // Assert state changed
+  expect(gitMock).not.toBeUnchanged(snapshot);
+});
+```
+
+### Custom Matchers Pattern
+
+Each state mock file can define custom matchers for domain-specific assertions:
+
+```typescript
+// In *.state-mock.ts files:
+
+// 1. State interface (pure data, extends MockState)
+export interface FileSystemMockState extends MockState {
+  readonly files: ReadonlyMap<string, string | Buffer>;
+  readonly directories: ReadonlySet<string>;
+}
+
+// 2. Mock type (Layer & MockWithState<State>)
+export type MockFileSystemLayer = FileSystemLayer & MockWithState<FileSystemMockState>;
+
+// 3. Matchers interface
+interface FileSystemMatchers {
+  toHaveFile(path: string | Path): void;
+  toHaveDirectory(path: string | Path): void;
+}
+
+// 4. Vitest augmentation
+declare module "vitest" {
+  interface Assertion<T> extends MatchersFor<T, MockFileSystemLayer, FileSystemMatchers> {}
+}
+
+// 5. Matcher implementations (type-safe via MatcherImplementationsFor)
+export const fileSystemMatchers: MatcherImplementationsFor<
+  MockFileSystemLayer,
+  FileSystemMatchers
+> = {
+  toHaveFile(received, path) {
+    const normalized = new Path(path).toString();
+    const pass = received.$.files.has(normalized);
+    return {
+      pass,
+      message: () =>
+        pass
+          ? `Expected mock not to have file "${normalized}"`
+          : `Expected mock to have file "${normalized}"`,
+    };
+  },
+  // ... other matchers
+};
+
+// 6. Factory function
+export function createMockFileSystem(options?: MockFileSystemOptions): MockFileSystemLayer {
+  // ... implementation
+}
+```
+
+### ViewLayer State Mock Example
+
+The ViewLayer mock demonstrates the same pattern with custom matchers for view-specific assertions:
+
+```typescript
+import { createViewLayerMock } from "../shell/view.state-mock";
+
+const mock = createViewLayerMock();
+
+// Create views and interact with them
+const handle = mock.createView({ backgroundColor: "#1e1e1e" });
+await mock.loadURL(handle, "http://127.0.0.1:8080");
+
+// Custom matchers for view assertions
+expect(mock).toHaveView(handle.id);
+expect(mock).toHaveView(handle.id, {
+  url: "http://127.0.0.1:8080",
+  backgroundColor: "#1e1e1e",
+  attachedTo: null,
+});
+
+// Assert exact set of views
+expect(mock).toHaveViews([handle.id]);
+
+// Trigger simulated events
+mock.onDidFinishLoad(handle, () => console.log("loaded"));
+mock.$.triggerDidFinishLoad(handle);
+
+// Snapshot for unchanged assertions
+const snapshot = mock.$.snapshot();
+// ... action that should not change state ...
+expect(mock).toBeUnchanged(snapshot);
+```
+
+### Matcher Registration
+
+Matchers are registered in `src/test/setup-matchers.ts`:
+
+```typescript
+// Base matchers (toBeUnchanged) auto-registered via import
+import "./state-mock";
+
+// Filesystem matchers (auto-registered via import side effect)
+import "../services/platform/filesystem.state-mock";
+
+// ProcessRunner matchers (auto-registered via import side effect)
+import "../services/platform/process.state-mock";
+
+// ViewLayer matchers (auto-registered via import side effect)
+import "../services/shell/view.state-mock";
+```
+
+Note: Each `*.state-mock.ts` file calls `expect.extend(matchers)` when imported, so matchers are automatically available in tests.
+
+### ProcessRunner Mock Example
+
+The ProcessRunner state mock provides behavioral simulation for process spawning:
+
+```typescript
+// Factory with per-spawn configuration
+const runner = createMockProcessRunner({
+  onSpawn: (command, args, cwd) => {
+    if (command.includes("code-server")) {
+      return { pid: 12345, exitCode: 0 };
+    }
+    return { pid: undefined, stderr: "spawn ENOENT" }; // Spawn failure
+  },
+});
+
+// Use in tests
+const manager = new CodeServerManager(runner, ...);
+await manager.ensureRunning();
+
+// Custom matchers for verification
+expect(runner).toHaveSpawned([
+  { command: expect.stringContaining("code-server"), cwd: "/workspace" },
+]);
+
+// Stop and verify kill was called
+await manager.stop();
+expect(runner.$.spawned(0)).toHaveBeenKilled();
+expect(runner.$.spawned(0)).toHaveBeenKilledWith(1000, 1000);
+```
+
+**Custom Matchers:**
+
+| Matcher                            | Target             | Description                      |
+| ---------------------------------- | ------------------ | -------------------------------- |
+| `toHaveSpawned(records[])`         | MockProcessRunner  | Verify spawned processes         |
+| `toHaveBeenKilled()`               | MockSpawnedProcess | Verify kill() was called         |
+| `toHaveBeenKilledWith(term, kill)` | MockSpawnedProcess | Verify kill() with specific args |
+
+### SDK Client Mock
+
+The OpenCode SDK client mock provides behavioral simulation for `@opencode-ai/sdk` integration testing.
+
+**Factory Function**:
+
+```typescript
+import {
+  createSdkClientMock,
+  createSdkFactoryMock,
+  createTestSession,
+  type SdkClientFactory,
+  type MockSdkClient,
+} from "src/services/opencode/sdk-client.state-mock";
+
+// Create mock with initial sessions
+const mock = createSdkClientMock({
+  sessions: [
+    { id: "ses-0001", directory: "/test", status: { type: "idle" } },
+    { id: "ses-0002", directory: "/test", status: { type: "busy" } },
+  ],
+});
+
+// Create factory for dependency injection
+const factory = createSdkFactoryMock(mock);
+```
+
+**State Interface** (`SdkClientMockState`):
+
+| Property              | Type                               | Description                       |
+| --------------------- | ---------------------------------- | --------------------------------- |
+| `sessions`            | `ReadonlyMap<string, MockSession>` | Session ID → session with status  |
+| `connected`           | `boolean`                          | Whether event stream is connected |
+| `prompts`             | `readonly PromptRecord[]`          | History of prompts sent           |
+| `emittedEvents`       | `readonly SdkEvent[]`              | History of emitted events         |
+| `permissionResponses` | `readonly PermissionResponse[]`    | History of permission responses   |
+| `emitEvent(event)`    | `(event: SdkEvent) => void`        | Push event synchronously          |
+| `completeStream()`    | `() => void`                       | End the event stream              |
+| `errorStream(error)`  | `(error: Error) => void`           | Error the event stream            |
+| `setConnectionError`  | `(error: Error \| null) => void`   | Make subscribe() reject           |
+
+**Custom Matchers**:
+
+```typescript
+// Assert a prompt was sent to a session
+expect(mock).toHaveSentPrompt("ses-0001"); // Any prompt
+expect(mock).toHaveSentPrompt("ses-0001", "Hello"); // Exact match
+expect(mock).toHaveSentPrompt("ses-0001", /implement.*feature/); // RegExp
+
+// Assert session exists
+expect(mock).toHaveSession("ses-0001");
+```
+
+**Event Emission** (synchronous for test predictability):
+
+```typescript
+import { createSessionStatusEvent } from "./sdk-client.state-mock";
+
+// Emit events via state - immediately resolves pending iterator reads
+mock.$.emitEvent(createSessionStatusEvent("ses-0001", { type: "busy" }));
+
+// Assertions can be made immediately (no await needed)
+expect(client.currentStatus).toBe("busy");
+expect(listener).toHaveBeenCalledWith("busy");
+```
+
+**Helper Functions**:
+
+| Function                         | Returns       | Description                  |
+| -------------------------------- | ------------- | ---------------------------- |
+| `createTestSession(overrides)`   | `MockSession` | Create session with defaults |
+| `createSessionStatusEvent()`     | `SdkEvent`    | session.status event         |
+| `createSessionCreatedEvent()`    | `SdkEvent`    | session.created event        |
+| `createSessionIdleEvent()`       | `SdkEvent`    | session.idle event           |
+| `createSessionDeletedEvent()`    | `SdkEvent`    | session.deleted event        |
+| `createPermissionUpdatedEvent()` | `SdkEvent`    | permission.updated event     |
+| `createPermissionRepliedEvent()` | `SdkEvent`    | permission.replied event     |
 
 ---
 
@@ -445,7 +657,7 @@ Integration tests replace unit tests as the primary feedback mechanism during de
 
 **Why speed is non-negotiable**:
 
-- Developers run `npm run validate` continuously during development
+- Developers run `pnpm validate` continuously during development
 - Slow tests → skipped tests → undetected bugs → defeats the whole strategy
 - Integration tests with in-memory behavioral mocks should be **nearly as fast as unit tests**
 - If a test is slow, the behavioral mock is doing too much work
@@ -484,13 +696,13 @@ it("throws when createWorktree fails", ...)
 
 ## Test Commands
 
-| Command                    | What it runs                | Use case                      |
-| -------------------------- | --------------------------- | ----------------------------- |
-| `npm test`                 | All tests                   | Full verification             |
-| `npm run test:integration` | Integration tests only      | Primary development feedback  |
-| `npm run test:boundary`    | Boundary tests only         | Test external interfaces      |
-| `npm run test:legacy`      | Deprecated unit tests       | Until migrated to integration |
-| `npm run validate`         | Integration + check + build | Pre-commit validation (fast)  |
+| Command                 | What it runs                | Use case                      |
+| ----------------------- | --------------------------- | ----------------------------- |
+| `pnpm test`             | All tests                   | Full verification             |
+| `pnpm test:integration` | Integration tests only      | Primary development feedback  |
+| `pnpm test:boundary`    | Boundary tests only         | Test external interfaces      |
+| `pnpm test:legacy`      | Deprecated unit tests       | Until migrated to integration |
+| `pnpm validate`         | Integration + check + build | Pre-commit validation (fast)  |
 
 **Why validate excludes boundary tests**: Boundary tests may be slower, require specific binaries (code-server, opencode), and are only relevant when working on external interface code.
 
@@ -498,12 +710,12 @@ it("throws when createWorktree fails", ...)
 
 ## When to Run Tests
 
-| Test Type       | When to Run                                          |
-| --------------- | ---------------------------------------------------- |
-| **Integration** | Continuously during development (`npm run validate`) |
-| **Boundary**    | When developing new/updated external interfaces      |
-| **Focused**     | Part of integration suite (fast, pure functions)     |
-| **Legacy**      | Temporary - until module is migrated                 |
+| Test Type       | When to Run                                       |
+| --------------- | ------------------------------------------------- |
+| **Integration** | Continuously during development (`pnpm validate`) |
+| **Boundary**    | When developing new/updated external interfaces   |
+| **Focused**     | Part of integration suite (fast, pure functions)  |
+| **Legacy**      | Temporary - until module is migrated              |
 
 ---
 
@@ -864,11 +1076,11 @@ For AI agent implementation work, use efficient coverage instead of strict TDD.
 ### For New Features/Code
 
 1. **IMPLEMENT**: Write implementation code and corresponding tests together
-2. **VALIDATE**: After completing all implementation steps, run `npm run validate:fix`
+2. **VALIDATE**: After completing all implementation steps, run `pnpm validate:fix`
 3. **FIX**: Address any failures from batch validation
 
 ### For Bug Fixes (Cleanup Phase)
 
 1. **FIX**: Apply the code fix
 2. **COVER**: Ensure a test covers the fixed behavior (add if missing)
-3. **VALIDATE**: Run `npm run validate:fix`
+3. **VALIDATE**: Run `pnpm validate:fix`

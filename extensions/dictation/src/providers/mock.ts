@@ -1,6 +1,8 @@
 import type {
   SpeechToTextProvider,
   TranscriptHandler,
+  PartialTranscriptHandler,
+  ActivityHandler,
   ErrorHandler,
   DictationError,
 } from "./types";
@@ -12,6 +14,8 @@ import type {
 export class MockProvider implements SpeechToTextProvider {
   private state: "disconnected" | "connecting" | "connected" = "disconnected";
   private transcriptHandlers: TranscriptHandler[] = [];
+  private partialTranscriptHandlers: PartialTranscriptHandler[] = [];
+  private activityHandlers: ActivityHandler[] = [];
   private errorHandlers: ErrorHandler[] = [];
 
   // Test configuration
@@ -80,15 +84,45 @@ export class MockProvider implements SpeechToTextProvider {
     };
   }
 
+  onActivity(handler: ActivityHandler): () => void {
+    this.activityHandlers.push(handler);
+    return () => {
+      const index = this.activityHandlers.indexOf(handler);
+      if (index >= 0) {
+        this.activityHandlers.splice(index, 1);
+      }
+    };
+  }
+
+  onPartialTranscript(handler: PartialTranscriptHandler): () => void {
+    this.partialTranscriptHandlers.push(handler);
+    return () => {
+      const index = this.partialTranscriptHandlers.indexOf(handler);
+      if (index >= 0) {
+        this.partialTranscriptHandlers.splice(index, 1);
+      }
+    };
+  }
+
   dispose(): void {
     this.state = "disconnected";
     this.transcriptHandlers = [];
+    this.partialTranscriptHandlers = [];
+    this.activityHandlers = [];
     this.errorHandlers = [];
   }
 
   // Test helpers
   simulateTranscript(text: string): void {
     this.transcriptHandlers.forEach((h) => h(text));
+  }
+
+  simulatePartialTranscript(text: string): void {
+    this.partialTranscriptHandlers.forEach((h) => h(text));
+  }
+
+  simulateActivity(): void {
+    this.activityHandlers.forEach((h) => h());
   }
 
   simulateError(error: DictationError): void {

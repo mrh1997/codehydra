@@ -1,10 +1,12 @@
 /**
  * Test utilities for network layer mocking and boundary testing.
  *
- * Provides mock factories for HttpClient and PortManager
+ * Provides mock factories for PortManager
  * to enable easy unit testing of consumers.
  *
  * Also provides test server helpers for boundary tests against real HTTP servers.
+ *
+ * NOTE: For HttpClient mocking, use createMockHttpClient from http-client.state-mock.ts
  */
 
 import {
@@ -13,107 +15,14 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "http";
-import { type HttpClient, type HttpRequestOptions, type PortManager } from "./network";
-import { delay } from "../test-utils";
-
-// ============================================================================
-// Mock Option Types
-// ============================================================================
-
-/**
- * Options for creating a mock HttpClient.
- */
-export interface MockHttpClientOptions {
-  /** Response to return from fetch. Default: 200 OK with empty body */
-  readonly response?: Response;
-  /** Error to throw from fetch */
-  readonly error?: Error;
-  /** Custom implementation for fetch */
-  readonly implementation?: (url: string, options?: HttpRequestOptions) => Promise<Response>;
-}
-
-/**
- * Options for creating a mock PortManager.
- */
-export interface MockPortManagerOptions {
-  /** Options for findFreePort */
-  readonly findFreePort?: { port?: number; error?: Error };
-}
-
-// ============================================================================
-// Mock HTTP Client
-// ============================================================================
-
-/**
- * Create a mock HttpClient for testing.
- *
- * @example Basic usage - returns 200 OK
- * const httpClient = createMockHttpClient();
- *
- * @example Return custom response
- * const httpClient = createMockHttpClient({
- *   response: new Response('{"status":"ok"}', { status: 200 })
- * });
- *
- * @example Throw error
- * const httpClient = createMockHttpClient({
- *   error: new Error('Connection refused')
- * });
- *
- * @example Custom implementation
- * const httpClient = createMockHttpClient({
- *   implementation: async (url) => {
- *     if (url.includes('/health')) return new Response('ok');
- *     throw new Error('Not found');
- *   }
- * });
- */
-export function createMockHttpClient(options?: MockHttpClientOptions): HttpClient {
-  const defaultResponse = new Response("", { status: 200 });
-
-  return {
-    fetch: async (url: string, fetchOptions?: HttpRequestOptions): Promise<Response> => {
-      if (options?.implementation) {
-        return options.implementation(url, fetchOptions);
-      }
-      if (options?.error) {
-        throw options.error;
-      }
-      return options?.response ?? defaultResponse;
-    },
-  };
-}
+import { delay } from "@shared/test-fixtures";
 
 // ============================================================================
 // Mock Port Manager
 // ============================================================================
 
-/**
- * Create a mock PortManager for testing.
- *
- * @example Basic usage - returns port 8080
- * const portManager = createMockPortManager();
- *
- * @example Return custom port
- * const portManager = createMockPortManager({
- *   findFreePort: { port: 3000 }
- * });
- *
- * @example Throw errors
- * const portManager = createMockPortManager({
- *   findFreePort: { error: new Error('No ports available') }
- * });
- */
-export function createMockPortManager(options?: MockPortManagerOptions): PortManager {
-  return {
-    findFreePort: async (): Promise<number> => {
-      if (options?.findFreePort?.error) {
-        throw options.findFreePort.error;
-      }
-      return options?.findFreePort?.port ?? 8080;
-    },
-  };
-}
+// Re-export the state mock
+export { createPortManagerMock, type MockPortManager } from "./port-manager.state-mock";
 
 // ============================================================================
 // Test Server for Boundary Tests
@@ -226,8 +135,8 @@ export function createTestServer(routes?: Record<string, RouteHandler>): TestSer
       });
 
       await new Promise<void>((resolve, reject) => {
-        // CRITICAL: Bind to localhost only for security
-        server!.listen(0, "localhost", () => {
+        // CRITICAL: Bind to 127.0.0.1 only for security (avoid IPv4/IPv6 resolution issues)
+        server!.listen(0, "127.0.0.1", () => {
           const addr = server!.address();
           if (addr && typeof addr === "object") {
             serverPort = addr.port;
@@ -259,7 +168,7 @@ export function createTestServer(routes?: Record<string, RouteHandler>): TestSer
       if (serverPort === null) {
         throw new Error("Server not started - call start() first");
       }
-      return `http://localhost:${serverPort}${path}`;
+      return `http://127.0.0.1:${serverPort}${path}`;
     },
   };
 }
@@ -329,7 +238,7 @@ async function isPortOpen(port: number): Promise<boolean> {
   const { createConnection } = await import("net");
 
   return new Promise((resolve) => {
-    const socket = createConnection({ port, host: "localhost" }, () => {
+    const socket = createConnection({ port, host: "127.0.0.1" }, () => {
       socket.destroy();
       resolve(true);
     });

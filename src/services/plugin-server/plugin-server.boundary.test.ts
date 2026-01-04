@@ -10,7 +10,7 @@ import { PluginServer } from "./plugin-server";
 import type { ApiCallHandlers } from "./plugin-server";
 import { DefaultNetworkLayer } from "../platform/network";
 import { SILENT_LOGGER } from "../logging/logging.test-utils";
-import { delay } from "../test-utils";
+import { delay } from "@shared/test-fixtures";
 import {
   createTestClient,
   waitForConnect,
@@ -103,7 +103,7 @@ describe("PluginServer (boundary)", { timeout: TEST_TIMEOUT }, () => {
 
     it("rejects client with missing workspacePath property", async () => {
       // Client with auth object that has no workspacePath property at all
-      const client = ioClient(`http://localhost:${port}`, {
+      const client = ioClient(`http://127.0.0.1:${port}`, {
         // Use polling transport to match server configuration
         transports: ["polling"],
         autoConnect: false,
@@ -348,9 +348,9 @@ describe("PluginServer (boundary)", { timeout: TEST_TIMEOUT }, () => {
       expect(handlers.getMetadata).toHaveBeenCalledWith("/test/workspace");
     });
 
-    it("getOpencodePort Socket.IO event should return port from handler", async () => {
+    it("getOpenCodeSession Socket.IO event should return session from handler", async () => {
       const handlers = createMockApiHandlers({
-        getOpencodePort: 12345,
+        getOpenCodeSession: { port: 12345, sessionId: "session-abc123" },
       });
       server.onApiCall(handlers);
 
@@ -359,20 +359,20 @@ describe("PluginServer (boundary)", { timeout: TEST_TIMEOUT }, () => {
 
       const result = await new Promise<{
         success: boolean;
-        data?: number | null;
+        data?: { port: number; sessionId: string } | null;
         error?: string;
       }>((resolve) => {
-        client.emit("api:workspace:getOpencodePort", (res) => resolve(res));
+        client.emit("api:workspace:getOpenCodeSession", (res) => resolve(res));
       });
 
       expect(result.success).toBe(true);
-      expect(result.data).toBe(12345);
-      expect(handlers.getOpencodePort).toHaveBeenCalledWith("/test/workspace");
+      expect(result.data).toEqual({ port: 12345, sessionId: "session-abc123" });
+      expect(handlers.getOpenCodeSession).toHaveBeenCalledWith("/test/workspace");
     });
 
-    it("getOpencodePort Socket.IO event should return null when no server", async () => {
+    it("getOpenCodeSession Socket.IO event should return null when no server", async () => {
       const handlers = createMockApiHandlers({
-        getOpencodePort: null,
+        getOpenCodeSession: null,
       });
       server.onApiCall(handlers);
 
@@ -381,19 +381,19 @@ describe("PluginServer (boundary)", { timeout: TEST_TIMEOUT }, () => {
 
       const result = await new Promise<{
         success: boolean;
-        data?: number | null;
+        data?: { port: number; sessionId: string } | null;
         error?: string;
       }>((resolve) => {
-        client.emit("api:workspace:getOpencodePort", (res) => resolve(res));
+        client.emit("api:workspace:getOpenCodeSession", (res) => resolve(res));
       });
 
       expect(result.success).toBe(true);
       expect(result.data).toBeNull();
     });
 
-    it("getOpencodePort Socket.IO event should handle handler errors gracefully", async () => {
+    it("getOpenCodeSession Socket.IO event should handle handler errors gracefully", async () => {
       const handlers = createMockApiHandlers({
-        getOpencodePort: { success: false, error: "Workspace not found" },
+        getOpenCodeSession: { success: false, error: "Workspace not found" },
       });
       server.onApiCall(handlers);
 
@@ -402,10 +402,10 @@ describe("PluginServer (boundary)", { timeout: TEST_TIMEOUT }, () => {
 
       const result = await new Promise<{
         success: boolean;
-        data?: number | null;
+        data?: { port: number; sessionId: string } | null;
         error?: string;
       }>((resolve) => {
-        client.emit("api:workspace:getOpencodePort", (res) => resolve(res));
+        client.emit("api:workspace:getOpenCodeSession", (res) => resolve(res));
       });
 
       expect(result.success).toBe(false);

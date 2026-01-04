@@ -1,29 +1,62 @@
 import * as vscode from "vscode";
-import { DictationController } from "./DictationController";
-import { StatusBar } from "./StatusBar";
-import { AudioCaptureViewProvider } from "./audio/AudioCaptureViewProvider";
-import { COMMANDS } from "./commands";
+import { DictationController, type DictationState } from "./DictationController";
+import { StatusBar, type StatusBarState } from "./StatusBar";
+import { AudioCapturePanel } from "./audio/AudioCapturePanel";
+import { COMMANDS, CONTEXT_KEYS } from "./commands";
+
+/**
+ * Map DictationState to StatusBarState
+ */
+function mapDictationStateToStatusBar(state: DictationState): {
+  state: StatusBarState;
+  options?: { errorMessage?: string; startTime?: number };
+} {
+  switch (state.status) {
+    case "idle":
+      return { state: "idle" };
+    case "loading":
+      return { state: "loading" };
+    case "recording": {
+      // During buffering/flushing phases, always show as active (green)
+      // During streaming, use the isActive flag
+      const isActive = state.phase !== "streaming" || state.isActive;
+      return {
+        state: isActive ? "active" : "listening",
+        options: { startTime: state.startTime },
+      };
+    }
+    case "stopping":
+      return { state: "stopping" };
+    case "error":
+      return { state: "error", options: { errorMessage: state.message } };
+  }
+}
 
 let controller: DictationController | null = null;
 let statusBar: StatusBar | null = null;
+let audioCapturePanel: AudioCapturePanel | null = null;
 
 export function activate(context: vscode.ExtensionContext): void {
   console.log("[Dictation] Extension activating...");
 
-  // Create audio capture view provider and register it
-  const audioCaptureProvider = new AudioCaptureViewProvider(context.extensionUri);
-  const viewProviderDisposable = vscode.window.registerWebviewViewProvider(
-    AudioCaptureViewProvider.viewType,
-    audioCaptureProvider
-  );
+  // Create audio capture panel (singleton, opens as editor tab)
+  audioCapturePanel = AudioCapturePanel.getInstance(context.extensionUri);
 
   // Create controller and status bar
-  controller = new DictationController(audioCaptureProvider);
+  controller = new DictationController(audioCapturePanel);
   statusBar = new StatusBar();
 
-  // Wire up state changes to status bar
+  // Wire up state changes to status bar and context key
   controller.onStateChange((state) => {
-    statusBar?.update(state);
+    const mapped = mapDictationStateToStatusBar(state);
+    statusBar?.update(mapped.state, mapped.options);
+
+    // Set context key for conditional keybindings (Escape only works when recording)
+    void vscode.commands.executeCommand(
+      "setContext",
+      CONTEXT_KEYS.IS_RECORDING,
+      state.status === "recording" || state.status === "loading"
+    );
   });
 
   // Register commands
@@ -39,11 +72,23 @@ export function activate(context: vscode.ExtensionContext): void {
     void controller?.stop();
   });
 
+  const cancelCommand = vscode.commands.registerCommand(COMMANDS.CANCEL, () => {
+    void controller?.cancel();
+  });
+
+  // Register openPanel command - opens panel in background (no-op if not configured)
+  const openPanelCommand = vscode.commands.registerCommand(COMMANDS.OPEN_PANEL, () => {
+    audioCapturePanel?.open();
+  });
+
   // Watch for configuration changes
   const configWatcher = vscode.workspace.onDidChangeConfiguration((e) => {
     if (e.affectsConfiguration("codehydra.dictation")) {
       // Refresh status bar to reflect configuration changes
       statusBar?.refresh();
+
+      // Update panel config state
+      audioCapturePanel?.sendConfigUpdate();
 
       // If recording and API key was removed, stop recording
       if (controller?.isRecording()) {
@@ -60,13 +105,15 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Register disposables
   context.subscriptions.push(
-    viewProviderDisposable,
     toggleCommand,
     startCommand,
     stopCommand,
+    cancelCommand,
+    openPanelCommand,
     configWatcher,
     controller,
-    statusBar
+    statusBar,
+    audioCapturePanel
   );
 
   console.log("[Dictation] Extension activated");
@@ -78,6 +125,7 @@ export function deactivate(): void {
   // Cleanup is handled by VS Code's disposal of subscriptions
   controller = null;
   statusBar = null;
+  audioCapturePanel = null;
 
   console.log("[Dictation] Extension deactivated");
 }

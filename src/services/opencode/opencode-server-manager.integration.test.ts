@@ -11,26 +11,33 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { OpenCodeServerManager } from "./opencode-server-manager";
-import { AgentStatusManager } from "./agent-status-manager";
-import { createMockProcessRunner, createMockSpawnedProcess } from "../platform/process.test-utils";
+import { AgentStatusManager, OpenCodeProvider } from "./agent-status-manager";
+import { createMockProcessRunner, type MockProcessRunner } from "../platform/process.state-mock";
 import { createMockPathProvider } from "../platform/path-provider.test-utils";
+import { createPortManagerMock, type MockPortManager } from "../platform/network.test-utils";
 import { SILENT_LOGGER } from "../logging";
-import type { MockSpawnedProcess, MockProcessRunner } from "../platform/process.test-utils";
-import type { PortManager, HttpClient } from "../platform/network";
+import type { HttpClient } from "../platform/network";
 import type { PathProvider } from "../platform/path-provider";
 import type { WorkspacePath } from "../../shared/ipc";
-import { createMockSdkClient, createMockSdkFactory } from "./sdk-test-utils";
+import {
+  createSdkClientMock,
+  createSdkFactoryMock,
+  asSdkFactory,
+  type SdkClientFactory,
+} from "./sdk-client.state-mock";
 
 /**
- * Create a mock PortManager with vitest spies.
+ * Helper to create and initialize a provider for testing.
  */
-function createTestPortManager(
-  startPort = 14001
-): PortManager & { findFreePort: ReturnType<typeof vi.fn> } {
-  let currentPort = startPort;
-  return {
-    findFreePort: vi.fn().mockImplementation(async () => currentPort++),
-  };
+async function createAndInitializeProvider(
+  port: number,
+  sdkFactory: SdkClientFactory,
+  workspacePath = "/test/workspace"
+): Promise<OpenCodeProvider> {
+  const provider = new OpenCodeProvider(workspacePath, SILENT_LOGGER, asSdkFactory(sdkFactory));
+  await provider.initializeClient(port);
+  await provider.fetchStatus();
+  return provider;
 }
 
 /**
@@ -55,25 +62,27 @@ describe("OpenCodeServerManager integration", () => {
   let serverManager: OpenCodeServerManager;
   let agentStatusManager: AgentStatusManager;
   let mockProcessRunner: MockProcessRunner;
-  let mockPortManager: ReturnType<typeof createTestPortManager>;
+  let mockPortManager: MockPortManager;
   let mockHttpClient: ReturnType<typeof createTestHttpClient>;
   let mockPathProvider: PathProvider;
-  let processes: MockSpawnedProcess[];
+  let processCount: number;
+  let mockSdkFactory: SdkClientFactory;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    processes = [];
+    processCount = 0;
 
     // Create a mock process runner that returns new processes for each call
-    const mockProcess = createMockSpawnedProcess({ pid: 1000 });
-    mockProcessRunner = createMockProcessRunner(mockProcess);
-    // Override run to create new processes each time
-    mockProcessRunner.run.mockImplementation(() => {
-      const proc = createMockSpawnedProcess({ pid: 1000 + processes.length });
-      processes.push(proc);
-      return proc;
+    mockProcessRunner = createMockProcessRunner({
+      onSpawn: () => ({
+        pid: 1000 + processCount++,
+        killResult: { success: true, reason: "SIGTERM" },
+      }),
     });
-    mockPortManager = createTestPortManager(14001);
+    // Provide enough ports for tests (max ~5 concurrent servers in some tests)
+    mockPortManager = createPortManagerMock([
+      14001, 14002, 14003, 14004, 14005, 14006, 14007, 14008, 14009, 14010,
+    ]);
     mockHttpClient = createTestHttpClient();
     mockPathProvider = createTestPathProvider();
 
@@ -86,9 +95,9 @@ describe("OpenCodeServerManager integration", () => {
     );
 
     // Create AgentStatusManager with mock SDK
-    const mockSdk = createMockSdkClient();
-    const mockSdkFactory = createMockSdkFactory(mockSdk);
-    agentStatusManager = new AgentStatusManager(SILENT_LOGGER, mockSdkFactory);
+    const mockSdk = createSdkClientMock();
+    mockSdkFactory = createSdkFactoryMock(mockSdk);
+    agentStatusManager = new AgentStatusManager(SILENT_LOGGER, asSdkFactory(mockSdkFactory));
   });
 
   afterEach(async () => {
@@ -104,8 +113,8 @@ describe("OpenCodeServerManager integration", () => {
       // Start server
       await serverManager.startServer("/workspace/feature-a");
 
-      // Callback should have been fired
-      expect(startedCallback).toHaveBeenCalledWith("/workspace/feature-a", 14001);
+      // Callback should have been fired (with undefined pending prompt)
+      expect(startedCallback).toHaveBeenCalledWith("/workspace/feature-a", 14001, undefined);
     });
 
     it("onServerStopped callback is fired when server stops", async () => {
@@ -116,8 +125,8 @@ describe("OpenCodeServerManager integration", () => {
       await serverManager.startServer("/workspace/feature-a");
       await serverManager.stopServer("/workspace/feature-a");
 
-      // Callback should have been fired
-      expect(stoppedCallback).toHaveBeenCalledWith("/workspace/feature-a");
+      // Callback should have been fired with isRestart=false
+      expect(stoppedCallback).toHaveBeenCalledWith("/workspace/feature-a", false);
     });
 
     it("AgentStatusManager receives stop event via callback wiring", async () => {
@@ -126,8 +135,9 @@ describe("OpenCodeServerManager integration", () => {
         agentStatusManager.removeWorkspace(path as WorkspacePath);
       });
 
-      // Initialize workspace directly (simulating start callback)
-      await agentStatusManager.initWorkspace("/workspace/feature-a" as WorkspacePath, 14001);
+      // Initialize workspace directly (simulating start callback with provider creation)
+      const provider = await createAndInitializeProvider(14001, mockSdkFactory);
+      agentStatusManager.addProvider("/workspace/feature-a" as WorkspacePath, provider);
 
       // Start and stop server (stop triggers the callback)
       await serverManager.startServer("/workspace/feature-a");
@@ -189,9 +199,9 @@ describe("OpenCodeServerManager integration", () => {
       expect(serverManager.getPort("/project/.worktrees/feature-c")).toBeUndefined();
 
       // All processes should have been killed
-      for (const proc of processes) {
-        expect(proc.kill).toHaveBeenCalled();
-      }
+      expect(mockProcessRunner.$.spawned(0)).toHaveBeenKilled();
+      expect(mockProcessRunner.$.spawned(1)).toHaveBeenKilled();
+      expect(mockProcessRunner.$.spawned(2)).toHaveBeenKilled();
     });
   });
 

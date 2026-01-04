@@ -654,15 +654,18 @@ const codeServerManager = new CodeServerManager(config, runner, networkLayer, ne
 **Testing with Mock Clients:**
 
 ```typescript
-import { createMockHttpClient, createMockPortManager } from "../platform/network.test-utils";
+import { createMockHttpClient, createPortManagerMock } from "../platform/network.test-utils";
 
 // Create mock with controllable behavior
 const mockHttpClient = createMockHttpClient({
   response: new Response(JSON.stringify({ status: "ok" }), { status: 200 }),
 });
 
+// Create port manager mock that returns sequential ports
+const portManager = createPortManagerMock([8080, 8081]);
+
 // Inject into service
-const service = new SomeService(mockHttpClient);
+const service = new SomeService(mockHttpClient, portManager);
 ```
 
 **waitForPort() Utility:**
@@ -835,42 +838,43 @@ All methods throw `FileSystemError` (extends `ServiceError`) with mapped error c
 | `ENOTEMPTY` | Directory not empty                 |
 | `UNKNOWN`   | Other errors (check `originalCode`) |
 
-**Testing with Mocks:**
+**Testing with Behavioral Mocks:**
 
 ```typescript
-import { createMockFileSystemLayer, createDirEntry } from "../platform/filesystem.test-utils";
+import { createFileSystemMock, file, directory, symlink } from "../platform/filesystem.state-mock";
 
-// Basic mock - all operations succeed
-const mockFs = createMockFileSystemLayer();
-
-// Return specific file content
-const mockFs = createMockFileSystemLayer({
-  readFile: { content: '{"key": "value"}' },
-});
-
-// Simulate specific error
-const mockFs = createMockFileSystemLayer({
-  readFile: { error: new FileSystemError("ENOENT", "/path", "Not found") },
-});
-
-// Custom implementation for complex logic
-const mockFs = createMockFileSystemLayer({
-  readFile: {
-    implementation: async (path) => {
-      if (path === "/config.json") return "{}";
-      throw new FileSystemError("ENOENT", path, "Not found");
-    },
+// Create mock with initial filesystem state
+const mock = createFileSystemMock({
+  entries: {
+    "/projects": directory(),
+    "/projects/config.json": file('{"key": "value"}'),
+    "/projects/bin/run.sh": file("#!/bin/bash", { executable: true }),
+    "/projects/current": symlink("/projects/v1"),
   },
-  readdir: {
-    entries: [
-      createDirEntry("file.txt", { isFile: true }),
-      createDirEntry("subdir", { isDirectory: true }),
-    ],
+});
+
+// Simulate error on specific entry
+const mockWithError = createFileSystemMock({
+  entries: {
+    "/protected.txt": file("secret", { error: "EACCES" }),
   },
 });
 
 // Inject into service
-const service = new ProjectStore(projectsDir, mockFs);
+const service = new ProjectStore(projectsDir, mock);
+
+// Assert filesystem state after operations
+await service.saveConfig({ debug: true });
+expect(mock).toHaveFile("/projects/config.json");
+expect(mock).toHaveFileContaining("/projects/config.json", "debug");
+
+// Access state directly via $ property
+expect(mock.$.entries.size).toBe(4);
+
+// Use snapshot for unchanged assertions
+const snapshot = mock.$.snapshot();
+await expect(mock.readFile("/missing")).rejects.toThrow();
+expect(mock).toBeUnchanged(snapshot);
 ```
 
 ### External System Access Rules
@@ -926,14 +930,46 @@ class MyService {
 
 All paths below are relative to `src/services/`.
 
-| Interface              | Mock Factory                       | Location                                        |
-| ---------------------- | ---------------------------------- | ----------------------------------------------- |
-| `FileSystemLayer`      | `createMockFileSystemLayer()`      | `platform/filesystem.test-utils.ts`             |
-| `HttpClient`           | `createMockHttpClient()`           | `platform/network.test-utils.ts`                |
-| `PortManager`          | `createMockPortManager()`          | `platform/network.test-utils.ts`                |
-| `ProcessRunner`        | `createMockProcessRunner()`        | `platform/process.test-utils.ts`                |
-| `PathProvider`         | `createMockPathProvider()`         | `platform/path-provider.test-utils.ts`          |
-| `WorkspaceLockHandler` | `createMockWorkspaceLockHandler()` | `platform/workspace-lock-handler.test-utils.ts` |
+| Interface              | Mock Factory                       | Location                                          |
+| ---------------------- | ---------------------------------- | ------------------------------------------------- |
+| `ArchiveExtractor`     | `createArchiveExtractorMock()`     | `binary-download/archive-extractor.state-mock.ts` |
+| `FileSystemLayer`      | `createFileSystemMock()`           | `platform/filesystem.state-mock.ts`               |
+| `HttpClient`           | `createMockHttpClient()`           | `platform/network.test-utils.ts`                  |
+| `PortManager`          | `createPortManagerMock()`          | `platform/port-manager.state-mock.ts`             |
+| `ProcessRunner`        | `createMockProcessRunner()`        | `platform/process.test-utils.ts`                  |
+| `PathProvider`         | `createMockPathProvider()`         | `platform/path-provider.test-utils.ts`            |
+| `WorkspaceLockHandler` | `createMockWorkspaceLockHandler()` | `platform/workspace-lock-handler.test-utils.ts`   |
+| `IGitClient`           | `createMockGitClient()`            | `git/git-client.state-mock.ts`                    |
+
+**Git client mock example:**
+
+```typescript
+import { createMockGitClient } from "./git/git-client.state-mock";
+
+const mock = createMockGitClient({
+  repositories: {
+    "/project": {
+      branches: ["main", "feature-x"],
+      remoteBranches: ["origin/main"],
+      remotes: ["origin"],
+      worktrees: [
+        { name: "feature-x", path: "/workspaces/feature-x", branch: "feature-x", isDirty: true },
+      ],
+      branchConfigs: { "feature-x": { "codehydra.base": "main" } },
+      mainIsDirty: false,
+      currentBranch: "main",
+    },
+  },
+});
+
+// Mutations update state
+await mock.createBranch(new Path("/project"), "feature-y", "main");
+expect(mock).toHaveBranch("/project", "feature-y");
+
+// Custom matchers
+expect(mock).toHaveWorktree("/project", "/workspaces/feature-x");
+expect(mock).toHaveBranchConfig("/project", "feature-x", "codehydra.base", "main");
+```
 
 ### Shell and Platform Layer Patterns
 
@@ -993,57 +1029,65 @@ interface ViewHandle {
 
 #### Behavioral Mocks for Layers
 
-Layer mocks maintain in-memory state, not just call tracking:
+Layer mocks maintain in-memory state with custom matchers for assertions:
 
 ```typescript
-// Create behavioral mock with state inspection
-function createBehavioralViewLayer(): ViewLayer & { _getState(): ViewLayerState } {
-  const views = new Map<string, ViewState>();
-  let nextId = 1;
+import { createViewLayerMock } from "../shell/view.state-mock";
 
-  return {
-    createView(options) {
-      const id = `view-${nextId++}`;
-      views.set(id, {
-        url: null,
-        bounds: null,
-        attachedTo: null,
-        options,
-      });
-      return { id, __brand: "ViewHandle" };
-    },
+// Create mock with state access via $ property
+const mock = createViewLayerMock();
 
-    async loadURL(handle, url) {
-      const view = views.get(handle.id);
-      if (!view) throw new ShellError("VIEW_NOT_FOUND", ...);
-      view.url = url;
-    },
+// All ViewLayer methods work with in-memory state
+const handle = mock.createView({ backgroundColor: "#1e1e1e" });
+await mock.loadURL(handle, "http://127.0.0.1:8080");
 
-    destroy(handle) {
-      if (!views.delete(handle.id)) {
-        throw new ShellError("VIEW_NOT_FOUND", ...);
-      }
-    },
+// State access via $ property
+const snapshot = mock.$.snapshot();
 
-    // State inspection for tests
-    _getState() {
-      return { views: new Map(views) };
-    },
-  };
-}
+// Trigger simulated events
+mock.$.triggerDidFinishLoad(handle);
+mock.$.triggerWillNavigate(handle, "http://example.com");
+```
+
+**Custom matchers for assertions:**
+
+```typescript
+// Check view exists
+expect(mock).toHaveView(handle.id);
+
+// Check view properties
+expect(mock).toHaveView(handle.id, {
+  url: "http://127.0.0.1:8080",
+  attachedTo: null,
+  backgroundColor: "#1e1e1e",
+});
+
+// Check exact set of views
+expect(mock).toHaveViews([handle.id]);
+
+// Use .not for negations
+expect(mock).not.toHaveView("view-999");
+
+// Snapshot comparison
+const before = mock.$.snapshot();
+mock.createView({});
+expect(mock).not.toBeUnchanged(before);
 ```
 
 **Usage in tests:**
 
 ```typescript
-const viewLayer = createBehavioralViewLayer();
+import { createViewLayerMock } from "../shell/view.state-mock";
+
+const viewLayer = createViewLayerMock();
 const viewManager = new ViewManager(viewLayer, sessionLayer, windowLayer, logger);
 
 // Act
-await viewManager.createWorkspaceView("/path/to/workspace", "http://localhost:8080");
+await viewManager.createWorkspaceView("/path/to/workspace", "http://127.0.0.1:8080");
 
-// Assert via state inspection
-expect(viewLayer._getState().views.size).toBe(1);
+// Assert via custom matchers (preferred)
+expect(viewLayer).toHaveViews(["view-1"]);
+expect(viewLayer).toHaveView("view-1", { url: "http://127.0.0.1:8080" });
 ```
 
 #### Error Handling Pattern
@@ -1091,16 +1135,17 @@ class DefaultViewLayer implements ViewLayer {
 
 All paths below are relative to `src/services/`.
 
-| Interface      | Mock Factory                     | Location                        |
-| -------------- | -------------------------------- | ------------------------------- |
-| `IpcLayer`     | `createBehavioralIpcLayer()`     | `platform/ipc.test-utils.ts`    |
-| `DialogLayer`  | `createBehavioralDialogLayer()`  | `platform/dialog.test-utils.ts` |
-| `ImageLayer`   | `createBehavioralImageLayer()`   | `platform/image.test-utils.ts`  |
-| `AppLayer`     | `createBehavioralAppLayer()`     | `platform/app.test-utils.ts`    |
-| `MenuLayer`    | `createBehavioralMenuLayer()`    | `platform/menu.test-utils.ts`   |
-| `WindowLayer`  | `createBehavioralWindowLayer()`  | `shell/window.test-utils.ts`    |
-| `ViewLayer`    | `createBehavioralViewLayer()`    | `shell/view.test-utils.ts`      |
-| `SessionLayer` | `createBehavioralSessionLayer()` | `shell/session.test-utils.ts`   |
+| Interface             | Mock Factory                      | Location                        |
+| --------------------- | --------------------------------- | ------------------------------- |
+| `IpcLayer`            | `createBehavioralIpcLayer()`      | `platform/ipc.test-utils.ts`    |
+| `DialogLayer`         | `createBehavioralDialogLayer()`   | `platform/dialog.test-utils.ts` |
+| `ImageLayer`          | `createImageLayerMock()`          | `platform/image.state-mock.ts`  |
+| `AppLayer`            | `createAppLayerMock()`            | `platform/app.state-mock.ts`    |
+| `MenuLayer`           | `createBehavioralMenuLayer()`     | `platform/menu.test-utils.ts`   |
+| `WindowLayer`         | `createWindowLayerMock()`         | `shell/window.state-mock.ts`    |
+| `WindowLayerInternal` | `createWindowLayerInternalMock()` | `shell/window.state-mock.ts`    |
+| `ViewLayer`           | `createViewLayerMock()`           | `shell/view.state-mock.ts`      |
+| `SessionLayer`        | `createSessionLayerMock()`        | `shell/session.state-mock.ts`   |
 
 ### WorkspaceLockHandler Pattern
 

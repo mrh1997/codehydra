@@ -171,61 +171,29 @@ export class OpenCodeClient implements IDisposable {
 
   constructor(port: number, logger: Logger, sdkFactory: SdkClientFactory = defaultSdkFactory) {
     this.port = port;
-    this.baseUrl = `http://localhost:${port}`;
+    this.baseUrl = `http://127.0.0.1:${port}`;
     this.logger = logger;
     this.sdk = sdkFactory(this.baseUrl);
   }
 
   /**
-   * Get all sessions and identify root sessions (those without parentID).
-   * Must be called before connect() to properly filter events.
+   * Lists all sessions from the OpenCode server.
+   * Returns all sessions without filtering (caller can filter as needed).
    */
-  async fetchRootSessions(): Promise<Result<Session[], OpenCodeError>> {
+  async listSessions(): Promise<Result<Session[], OpenCodeError>> {
+    this.logger.debug("Listing sessions");
     try {
       const result = await this.sdk.session.list();
       const sessions = result.data as SdkSession[];
-
-      // Clear and rebuild session tracking
-      this.rootSessionIds.clear();
-      this.childToRootSession.clear();
-
-      // First pass: identify root sessions
-      for (const session of sessions) {
-        if (!session.parentID) {
-          this.rootSessionIds.add(session.id);
-        }
-      }
-
-      // Second pass: map children to their root (supports arbitrary nesting)
-      for (const session of sessions) {
-        if (session.parentID) {
-          const rootId = this.findRootSessionId(session.parentID, sessions);
-          if (rootId) {
-            this.childToRootSession.set(session.id, rootId);
-          }
-        }
-      }
-
-      // Return only root sessions, mapped to our Session type
-      const rootSessions = sessions.filter((s) => !s.parentID).map((s) => this.mapSdkSession(s));
-      return ok(rootSessions);
+      return ok(sessions.map((s) => this.mapSdkSession(s)));
     } catch (error) {
       return err(this.mapSdkError(error));
     }
   }
 
   /**
-   * Find the root session ID by walking up the parent chain.
-   */
-  private findRootSessionId(sessionId: string, sessions: SdkSession[]): string | undefined {
-    const session = sessions.find((s) => s.id === sessionId);
-    if (!session) return undefined;
-    if (!session.parentID) return session.id; // This is the root
-    return this.findRootSessionId(session.parentID, sessions);
-  }
-
-  /**
    * Check if a session ID is a root session.
+   * Used internally for event filtering.
    */
   isRootSession(sessionId: string): boolean {
     return this.rootSessionIds.has(sessionId);
@@ -270,6 +238,67 @@ export class OpenCodeClient implements IDisposable {
       const status: ClientStatus = hasBusy ? "busy" : "idle";
 
       return ok(status);
+    } catch (error) {
+      return err(this.mapSdkError(error));
+    }
+  }
+
+  /**
+   * Create a new session.
+   * The session is immediately tracked in rootSessionIds before SSE events arrive.
+   * This ensures proper status tracking even if session.status arrives before session.created.
+   *
+   * @returns The full session object on success, or an error
+   */
+  async createSession(): Promise<Result<Session, OpenCodeError>> {
+    try {
+      const result = await this.sdk.session.create({ body: {} });
+      if (!result.data) {
+        return err(new OpenCodeError("Session creation returned no data", "REQUEST_FAILED"));
+      }
+
+      const session = this.mapSdkSession(result.data);
+
+      // Track immediately - don't wait for SSE session.created event
+      // This ensures session.status events are handled correctly
+      this.rootSessionIds.add(session.id);
+
+      this.logger.debug("Session created", { port: this.port, sessionId: session.id });
+      return ok(session);
+    } catch (error) {
+      return err(this.mapSdkError(error));
+    }
+  }
+
+  /**
+   * Send a prompt to an existing session.
+   *
+   * @param sessionId - The session to send the prompt to
+   * @param prompt - The prompt text
+   * @param options - Optional agent and model configuration
+   */
+  async sendPrompt(
+    sessionId: string,
+    prompt: string,
+    options?: { agent?: string; model?: { providerID: string; modelID: string } }
+  ): Promise<Result<void, OpenCodeError>> {
+    try {
+      await this.sdk.session.prompt({
+        path: { id: sessionId },
+        body: {
+          ...(options?.agent !== undefined && { agent: options.agent }),
+          ...(options?.model !== undefined && { model: options.model }),
+          parts: [{ type: "text", text: prompt }],
+        },
+      });
+
+      this.logger.debug("Prompt sent", {
+        port: this.port,
+        sessionId,
+        promptLength: prompt.length,
+        ...(options?.agent !== undefined && { agent: options.agent }),
+      });
+      return ok(undefined);
     } catch (error) {
       return err(this.mapSdkError(error));
     }
@@ -330,6 +359,14 @@ export class OpenCodeClient implements IDisposable {
 
   /**
    * Disconnect from SSE event stream.
+   *
+   * This method closes the SSE subscription but keeps the SDK client instance.
+   * Used during server restart flow to temporarily disconnect while preserving
+   * session tracking state. After restart, create a new OpenCodeClient and
+   * call connect() to resume event streaming.
+   *
+   * Note: For permanent cleanup, use dispose() instead which also clears
+   * all listeners and session tracking.
    */
   disconnect(): void {
     this.eventSubscription = null;
@@ -500,6 +537,7 @@ export class OpenCodeClient implements IDisposable {
   /**
    * Handle session.created events.
    * Adds new root sessions to the tracking set, and maps child sessions to their root.
+   * Emits a "created" event to notify listeners that a session exists but status is unknown.
    */
   private handleSessionCreated(properties?: { info?: { id?: string; parentID?: string } }): void {
     const sessionInfo = properties?.info;
@@ -508,8 +546,9 @@ export class OpenCodeClient implements IDisposable {
     if (!sessionInfo.parentID) {
       // Root session
       this.rootSessionIds.add(sessionInfo.id);
-      // Emit idle status for new root session
-      this.emitSessionEvent({ type: "idle", sessionId: sessionInfo.id });
+      // Emit "created" event - status is unknown until we receive session.status
+      // This allows sessionToPort tracking without assuming idle status
+      this.emitSessionEvent({ type: "created", sessionId: sessionInfo.id });
     } else {
       // Child session: map to its root
       if (this.rootSessionIds.has(sessionInfo.parentID)) {

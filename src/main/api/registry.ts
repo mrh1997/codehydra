@@ -177,7 +177,8 @@ export class ApiRegistry implements IApiRegistry {
         fetchBases: (projectId) => get("projects.fetchBases")({ projectId }),
       },
       workspaces: {
-        create: (projectId, name, base) => get("workspaces.create")({ projectId, name, base }),
+        create: (projectId, name, base, options) =>
+          get("workspaces.create")({ projectId, name, base, ...options }),
         remove: (projectId, workspaceName, keepBranch) =>
           get("workspaces.remove")({
             projectId,
@@ -189,8 +190,8 @@ export class ApiRegistry implements IApiRegistry {
         get: (projectId, workspaceName) => get("workspaces.get")({ projectId, workspaceName }),
         getStatus: (projectId, workspaceName) =>
           get("workspaces.getStatus")({ projectId, workspaceName }),
-        getOpencodePort: (projectId, workspaceName) =>
-          get("workspaces.getOpencodePort")({ projectId, workspaceName }),
+        getOpenCodeSession: (projectId, workspaceName) =>
+          get("workspaces.getOpenCodeSession")({ projectId, workspaceName }),
         restartOpencodeServer: (projectId, workspaceName) =>
           get("workspaces.restartOpencodeServer")({ projectId, workspaceName }),
         setMetadata: (projectId, workspaceName, key, value) =>

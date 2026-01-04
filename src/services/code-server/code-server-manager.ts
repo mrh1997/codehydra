@@ -43,7 +43,7 @@ export function urlForFolder(port: number, folderPath: string): string {
 
   // Encode the path but preserve colons for Windows drive letters
   const encodedPath = encodePathForUrl(normalizedPath).replace(/%3A/g, ":");
-  return `http://localhost:${port}/?folder=${encodedPath}`;
+  return `http://127.0.0.1:${port}/?folder=${encodedPath}`;
 }
 
 /**
@@ -214,10 +214,18 @@ export class CodeServerManager {
       cleanEnv.EDITOR = editorValue;
       cleanEnv.GIT_SEQUENCE_EDITOR = editorValue;
 
+      // Disable code-server's localhost URL rewriting by setting empty proxy URI.
+      // Without this, code-server rewrites localhost URLs to go through /proxy/<port>/
+      cleanEnv.VSCODE_PROXY_URI = "";
+
       // Set plugin port for VS Code extension communication
       if (this.config.pluginPort !== undefined) {
         cleanEnv.CODEHYDRA_PLUGIN_PORT = String(this.config.pluginPort);
       }
+
+      // Set code-server and opencode directories for wrapper scripts
+      cleanEnv.CODEHYDRA_CODE_SERVER_DIR = this.config.codeServerDir;
+      cleanEnv.CODEHYDRA_OPENCODE_DIR = this.config.opencodeDir;
 
       this.process = this.processRunner.run(this.config.binaryPath, args, {
         cwd: this.config.runtimeDir,
@@ -266,7 +274,7 @@ export class CodeServerManager {
    */
   private async checkHealth(port: number): Promise<boolean> {
     try {
-      const response = await this.httpClient.fetch(`http://localhost:${port}/healthz`, {
+      const response = await this.httpClient.fetch(`http://127.0.0.1:${port}/healthz`, {
         timeout: 1000,
       });
       const healthy = response.status === 200;

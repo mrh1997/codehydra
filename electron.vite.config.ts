@@ -3,6 +3,7 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { viteStaticCopy } from "vite-plugin-static-copy";
 import { resolve } from "path";
 import { execSync } from "node:child_process";
+import { codehydraDefaults } from "./vite.defaults";
 
 /**
  * Gets the application version.
@@ -29,28 +30,33 @@ const appVersion = getAppVersion();
 export default defineConfig({
   main: {
     build: {
+      reportCompressedSize: false,
       rollupOptions: {
         input: {
           index: resolve(__dirname, "src/main/index.ts"),
         },
-        // bufferutil and utf-8-validate are optional native deps for ws (used by socket.io)
-        external: ["bufferutil", "utf-8-validate"],
       },
     },
     define: {
       __APP_VERSION__: JSON.stringify(appVersion),
     },
     plugins: [
+      // bufferutil and utf-8-validate are optional native deps for ws (used by socket.io)
+      codehydraDefaults({ external: ["bufferutil", "utf-8-validate"] }),
       viteStaticCopy({
         targets: [
           { src: "dist/extensions/*", dest: "assets" },
           { src: "resources/scripts/*", dest: "assets/scripts" },
+          { src: "resources/bin/*", dest: "assets/bin" },
+          { src: "dist/bin/*", dest: "assets/bin" },
         ],
       }),
     ],
   },
   preload: {
+    plugins: [codehydraDefaults()],
     build: {
+      reportCompressedSize: false,
       rollupOptions: {
         input: {
           index: resolve(__dirname, "src/preload/index.ts"),
@@ -65,6 +71,7 @@ export default defineConfig({
   renderer: {
     root: resolve(__dirname, "src/renderer"),
     build: {
+      reportCompressedSize: false,
       rollupOptions: {
         input: {
           index: resolve(__dirname, "src/renderer/index.html"),
@@ -74,7 +81,7 @@ export default defineConfig({
     define: {
       __APP_VERSION__: JSON.stringify(appVersion),
     },
-    plugins: [svelte()],
+    plugins: [codehydraDefaults(), svelte()],
     resolve: {
       alias: {
         $lib: resolve(__dirname, "src/renderer/lib"),

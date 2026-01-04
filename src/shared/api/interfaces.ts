@@ -13,6 +13,8 @@ import type {
   BaseInfo,
   SetupResult,
   AppState,
+  InitialPrompt,
+  OpenCodeSession,
 } from "./types";
 import type { UIMode, UIModeChangedEvent } from "../ipc";
 import type { IDisposable, Unsubscribe } from "../types";
@@ -32,8 +34,31 @@ export interface IProjectApi {
   fetchBases(projectId: ProjectId): Promise<{ readonly bases: readonly BaseInfo[] }>;
 }
 
+/**
+ * Options for workspace creation.
+ */
+export interface WorkspaceCreateOptions {
+  /** Optional initial prompt to send after workspace is created */
+  readonly initialPrompt?: InitialPrompt;
+  /** If true, don't switch to the new workspace (default: false = switch to it) */
+  readonly keepInBackground?: boolean;
+}
+
 export interface IWorkspaceApi {
-  create(projectId: ProjectId, name: string, base: string): Promise<Workspace>;
+  /**
+   * Create a new workspace.
+   *
+   * @param projectId Project to create the workspace in
+   * @param name Name of the new workspace
+   * @param base Base branch to create the workspace from
+   * @param options Optional creation options (initialPrompt, keepInBackground)
+   */
+  create(
+    projectId: ProjectId,
+    name: string,
+    base: string,
+    options?: WorkspaceCreateOptions
+  ): Promise<Workspace>;
   /**
    * Start workspace removal (fire-and-forget).
    * Progress is emitted via workspace:deletion-progress events.
@@ -59,13 +84,16 @@ export interface IWorkspaceApi {
   get(projectId: ProjectId, workspaceName: WorkspaceName): Promise<Workspace | undefined>;
   getStatus(projectId: ProjectId, workspaceName: WorkspaceName): Promise<WorkspaceStatus>;
   /**
-   * Get the OpenCode server port for a workspace.
+   * Get the OpenCode session info for a workspace.
    * @param projectId Project containing the workspace
    * @param workspaceName Name of the workspace
-   * @returns Port number if server is running, null if not running or not initialized
+   * @returns Session info (port and sessionId) if available, null if not running or not initialized
    * @throws Error if project or workspace not found
    */
-  getOpencodePort(projectId: ProjectId, workspaceName: WorkspaceName): Promise<number | null>;
+  getOpenCodeSession(
+    projectId: ProjectId,
+    workspaceName: WorkspaceName
+  ): Promise<OpenCodeSession | null>;
   /**
    * Set a metadata value for a workspace.
    * @param projectId Project containing the workspace
@@ -174,6 +202,10 @@ export interface ApiEvents {
   "workspace:created": (event: {
     readonly projectId: ProjectId;
     readonly workspace: Workspace;
+    /** True if an initial prompt was provided for the workspace */
+    readonly hasInitialPrompt?: boolean;
+    /** True if workspace should stay in background (no auto-switch) */
+    readonly keepInBackground?: boolean;
   }) => void;
   "workspace:removed": (event: WorkspaceRef) => void;
   "workspace:switched": (event: WorkspaceRef | null) => void;

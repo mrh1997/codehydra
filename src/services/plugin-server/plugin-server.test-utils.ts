@@ -12,7 +12,13 @@ import type {
   PluginResult,
   CommandRequest,
 } from "../../shared/plugin-protocol";
-import type { WorkspaceStatus } from "../../shared/api/types";
+import type {
+  WorkspaceStatus,
+  Workspace,
+  WorkspaceName,
+  ProjectId,
+  OpenCodeSession,
+} from "../../shared/api/types";
 import type { ApiCallHandlers } from "./plugin-server";
 
 // ============================================================================
@@ -60,7 +66,7 @@ export interface TestClientOptions {
  * ```
  */
 export function createTestClient(port: number, options: TestClientOptions): TestClientSocket {
-  return ioClient(`http://localhost:${port}`, {
+  return ioClient(`http://127.0.0.1:${port}`, {
     // Use polling transport to match server configuration
     transports: ["polling"],
     autoConnect: options.autoConnect ?? false,
@@ -192,8 +198,10 @@ export interface DeleteWorkspaceResponse {
 export interface MockApiHandlersOptions {
   /** Status to return from getStatus. Default: { isDirty: false, agent: { type: 'none' } } */
   readonly getStatus?: WorkspaceStatus | PluginResult<WorkspaceStatus>;
-  /** Port to return from getOpencodePort. Default: null */
-  readonly getOpencodePort?: number | null | PluginResult<number | null>;
+  /** Session info to return from getOpenCodeSession. Default: null */
+  readonly getOpenCodeSession?: OpenCodeSession | null | PluginResult<OpenCodeSession | null>;
+  /** Port to return from restartOpencodeServer. Default: 14001 */
+  readonly restartOpencodeServer?: PluginResult<number>;
   /** Metadata to return from getMetadata. Default: { base: 'main' } */
   readonly getMetadata?: Record<string, string> | PluginResult<Record<string, string>>;
   /** Result to return from setMetadata. Default: { success: true, data: undefined } */
@@ -202,6 +210,8 @@ export interface MockApiHandlersOptions {
   readonly delete?: PluginResult<DeleteWorkspaceResponse>;
   /** Result to return from executeCommand. Default: { success: true, data: undefined } */
   readonly executeCommand?: unknown | PluginResult<unknown>;
+  /** Result to return from create. Default: success with mock workspace */
+  readonly create?: PluginResult<Workspace>;
 }
 
 /**
@@ -250,11 +260,11 @@ export function createMockApiHandlers(options?: MockApiHandlersOptions): ApiCall
     statusResult = { success: true, data: options?.getStatus ?? defaultStatus };
   }
 
-  let portResult: PluginResult<number | null>;
-  if (isPluginResult(options?.getOpencodePort)) {
-    portResult = options.getOpencodePort;
+  let sessionResult: PluginResult<OpenCodeSession | null>;
+  if (isPluginResult(options?.getOpenCodeSession)) {
+    sessionResult = options.getOpenCodeSession;
   } else {
-    portResult = { success: true, data: options?.getOpencodePort ?? null };
+    sessionResult = { success: true, data: options?.getOpenCodeSession ?? null };
   }
 
   let metadataResult: PluginResult<Record<string, string>>;
@@ -281,12 +291,30 @@ export function createMockApiHandlers(options?: MockApiHandlersOptions): ApiCall
     executeCommandResult = { success: true, data: options?.executeCommand ?? undefined };
   }
 
+  const restartOpencodeServerResult: PluginResult<number> = options?.restartOpencodeServer ?? {
+    success: true,
+    data: 14001,
+  };
+
+  const createResult: PluginResult<Workspace> = options?.create ?? {
+    success: true,
+    data: {
+      projectId: "myproject-12345678" as ProjectId,
+      name: "new-workspace" as WorkspaceName,
+      branch: "new-workspace",
+      metadata: { base: "main" },
+      path: "/projects/myproject/workspaces/new-workspace",
+    },
+  };
+
   return {
     getStatus: vi.fn().mockResolvedValue(statusResult),
-    getOpencodePort: vi.fn().mockResolvedValue(portResult),
+    getOpenCodeSession: vi.fn().mockResolvedValue(sessionResult),
+    restartOpencodeServer: vi.fn().mockResolvedValue(restartOpencodeServerResult),
     getMetadata: vi.fn().mockResolvedValue(metadataResult),
     setMetadata: vi.fn(() => Promise.resolve(setMetadataResult)),
     delete: vi.fn().mockResolvedValue(deleteResult),
     executeCommand: vi.fn().mockResolvedValue(executeCommandResult),
+    create: vi.fn().mockResolvedValue(createResult),
   };
 }

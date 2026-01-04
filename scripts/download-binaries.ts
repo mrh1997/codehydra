@@ -1,7 +1,7 @@
 /**
  * Postinstall script to download code-server and opencode binaries.
  *
- * This script is run after `npm install` to ensure binaries are available
+ * This script is run after `pnpm install` to ensure binaries are available
  * for development. In production, binaries are downloaded during app setup.
  *
  * In git worktrees, binaries are symlinked from the main repo's app-data/
@@ -9,7 +9,10 @@
  * Falls back to copying if symlinks aren't supported (Windows without
  * Developer Mode, cross-device scenarios).
  *
- * Usage: npm run postinstall (automatically run after npm install)
+ * Wrapper scripts are copied separately via `pnpm build:wrappers` which
+ * copies from resources/bin/ and dist/bin/ to app-data/bin/.
+ *
+ * Usage: pnpm postinstall (automatically run after pnpm install)
  *        npx tsx scripts/download-binaries.ts (manual run)
  */
 
@@ -21,40 +24,20 @@ import { DefaultArchiveExtractor } from "../src/services/binary-download/archive
 import { DefaultNetworkLayer } from "../src/services/platform/network";
 import { DefaultFileSystemLayer } from "../src/services/platform/filesystem";
 import { CODE_SERVER_VERSION, OPENCODE_VERSION } from "../src/services/binary-download/versions";
-import type { PathProvider } from "../src/services/platform/path-provider";
+import { DefaultPathProvider } from "../src/services/platform/path-provider";
 import type { PlatformInfo, SupportedArch } from "../src/services/platform/platform-info";
+import type { BuildInfo } from "../src/services/platform/build-info";
 import type { BinaryType, DownloadProgress } from "../src/services/binary-download/types";
-import type { Logger, LogContext } from "../src/services/logging";
+import type { Logger } from "../src/services/logging";
 
-// Console logger for the script
+// Console logger for the script - suppresses warnings to avoid alarming output
+// (e.g., ENOENT from readdir when checking if binary is installed is expected)
 const logger: Logger = {
-  silly(): void {
-    // Don't log silly messages in postinstall
-  },
-  debug(): void {
-    // Don't log debug messages in postinstall
-  },
-  info(message: string, context?: LogContext): void {
-    if (context) {
-      console.log(`[info] ${message}`, context);
-    } else {
-      console.log(`[info] ${message}`);
-    }
-  },
-  warn(message: string, context?: LogContext): void {
-    if (context) {
-      console.warn(`[warn] ${message}`, context);
-    } else {
-      console.warn(`[warn] ${message}`);
-    }
-  },
-  error(message: string, context?: LogContext): void {
-    if (context) {
-      console.error(`[error] ${message}`, context);
-    } else {
-      console.error(`[error] ${message}`);
-    }
-  },
+  silly(): void {},
+  debug(): void {},
+  info(): void {},
+  warn(): void {},
+  error(): void {},
 };
 
 // Map Node.js arch to SupportedArch
@@ -65,37 +48,12 @@ function getSupportedArch(): SupportedArch {
   throw new Error(`Unsupported architecture: ${process.arch}. CodeHydra requires x64 or arm64.`);
 }
 
-// Create a path provider for development mode (uses ./app-data/)
-function createDevPathProvider(platformInfo: PlatformInfo): PathProvider {
-  const dataRootDir = path.join(process.cwd(), "app-data");
-  const isWindows = platformInfo.platform === "win32";
-
-  // Binary directories with versions
-  const codeServerDir = path.join(dataRootDir, "code-server", CODE_SERVER_VERSION);
-  const opencodeDir = path.join(dataRootDir, "opencode", OPENCODE_VERSION);
-
+// Create build info for development mode
+function createDevBuildInfo(): BuildInfo {
   return {
-    dataRootDir,
-    projectsDir: path.join(dataRootDir, "projects"),
-    vscodeDir: path.join(dataRootDir, "vscode"),
-    vscodeExtensionsDir: path.join(dataRootDir, "vscode", "extensions"),
-    vscodeUserDataDir: path.join(dataRootDir, "vscode", "user-data"),
-    vscodeSetupMarkerPath: path.join(dataRootDir, "vscode", ".setup-completed"),
-    electronDataDir: path.join(dataRootDir, "electron"),
-    vscodeAssetsDir: path.join(process.cwd(), "out", "main", "assets"),
-    appIconPath: path.join(process.cwd(), "resources", "icon.png"),
-    binDir: path.join(dataRootDir, "bin"),
-    codeServerDir,
-    opencodeDir,
-    codeServerBinaryPath: path.join(
-      codeServerDir,
-      isWindows ? "bin/code-server.cmd" : "bin/code-server"
-    ),
-    opencodeBinaryPath: path.join(opencodeDir, isWindows ? "opencode.exe" : "opencode"),
-    getProjectWorkspacesDir: (projectPath: string): string => {
-      const basename = path.basename(projectPath);
-      return path.join(dataRootDir, "projects", basename, "workspaces");
-    },
+    version: "dev",
+    isDevelopment: true,
+    appPath: process.cwd(),
   };
 }
 
@@ -126,7 +84,7 @@ async function findMainRepoAppData(): Promise<string | null> {
       // This is a worktree - .git is a file with gitdir: pointer
       const content = await fs.promises.readFile(gitPath, "utf-8");
       const match = content.match(/^gitdir:\s*(.+)$/m);
-      if (match) {
+      if (match?.[1]) {
         // gitdir points to .git/worktrees/<name>, go up to find main repo
         // e.g., /repo/.git/worktrees/download -> /repo
         const worktreeGitDir = match[1].trim();
@@ -256,7 +214,8 @@ async function main(): Promise<void> {
   console.log("Setting up binary dependencies...\n");
 
   const platformInfo = createPlatformInfo();
-  const pathProvider = createDevPathProvider(platformInfo);
+  const buildInfo = createDevBuildInfo();
+  const pathProvider = new DefaultPathProvider(buildInfo, platformInfo);
 
   // Check if we're in a git worktree
   const mainRepoAppData = await findMainRepoAppData();
@@ -285,7 +244,7 @@ async function main(): Promise<void> {
     "code-server",
     CODE_SERVER_VERSION,
     mainRepoAppData,
-    pathProvider.dataRootDir
+    pathProvider.dataRootDir.toString()
   );
 
   console.log("Checking opencode...");
@@ -294,19 +253,16 @@ async function main(): Promise<void> {
     "opencode",
     OPENCODE_VERSION,
     mainRepoAppData,
-    pathProvider.dataRootDir
+    pathProvider.dataRootDir.toString()
   );
-
-  // Create wrapper scripts
-  console.log("\nCreating wrapper scripts...");
-  await service.createWrapperScripts();
-  console.log(`  Wrapper scripts created in ${pathProvider.binDir}`);
 
   console.log("\nBinary setup complete!");
 }
 
 main().catch((error) => {
-  console.error("\nError during binary download:");
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  const message = error instanceof Error ? error.message : String(error);
+  console.log(`\nBinary download skipped: ${message}`);
+  console.log("Run 'pnpm postinstall' to retry, or binaries will download on first app launch.");
+  // Exit successfully - missing dev binaries shouldn't fail pnpm install
+  process.exit(0);
 });

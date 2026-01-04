@@ -5,14 +5,11 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { BadgeManager } from "./badge-manager";
 import { createMockPlatformInfo } from "../../services/platform/platform-info.test-utils";
 import { SILENT_LOGGER } from "../../services/logging";
+import { createAppLayerMock, type MockAppLayer } from "../../services/platform/app.state-mock";
 import {
-  createBehavioralAppLayer,
-  type BehavioralAppLayer,
-} from "../../services/platform/app.test-utils";
-import {
-  createBehavioralImageLayer,
-  type BehavioralImageLayer,
-} from "../../services/platform/image.test-utils";
+  createImageLayerMock,
+  type MockImageLayer,
+} from "../../services/platform/image.state-mock";
 import type { WindowManager } from "./window-manager";
 import type { ImageHandle } from "../../services/platform/types";
 import type { AgentStatusManager, StatusChangedCallback } from "../../services/opencode";
@@ -68,13 +65,13 @@ function createMockAgentStatusManager(): Pick<
 }
 
 describe("BadgeManager Integration", () => {
-  let appLayer: BehavioralAppLayer;
-  let imageLayer: BehavioralImageLayer;
+  let appLayer: MockAppLayer;
+  let imageLayer: MockImageLayer;
   let windowManager: MockWindowManager;
 
   beforeEach(() => {
-    appLayer = createBehavioralAppLayer({ platform: "darwin" });
-    imageLayer = createBehavioralImageLayer();
+    appLayer = createAppLayerMock({ platform: "darwin" });
+    imageLayer = createImageLayerMock();
     windowManager = createMockWindowManager();
   });
 
@@ -102,7 +99,7 @@ describe("BadgeManager Integration", () => {
       badgeManager.connectToStatusManager(statusManager as unknown as AgentStatusManager);
 
       // Badge should be empty (all ready = no badge)
-      expect(appLayer._getState().dockSetBadgeCalls.at(-1)).toEqual("");
+      expect(appLayer).toHaveDockBadge("");
     });
 
     it("shows red badge when all workspaces are busy", () => {
@@ -128,7 +125,7 @@ describe("BadgeManager Integration", () => {
       badgeManager.connectToStatusManager(statusManager as unknown as AgentStatusManager);
 
       // Badge should show filled circle (all working)
-      expect(appLayer._getState().dockSetBadgeCalls.at(-1)).toEqual("●");
+      expect(appLayer).toHaveDockBadge("●");
     });
 
     it("shows mixed badge when some workspaces are idle and some busy", () => {
@@ -154,7 +151,7 @@ describe("BadgeManager Integration", () => {
       badgeManager.connectToStatusManager(statusManager as unknown as AgentStatusManager);
 
       // Badge should show half circle (mixed)
-      expect(appLayer._getState().dockSetBadgeCalls.at(-1)).toEqual("◐");
+      expect(appLayer).toHaveDockBadge("◐");
     });
 
     it("treats workspace with mixed status as working", () => {
@@ -180,7 +177,7 @@ describe("BadgeManager Integration", () => {
       badgeManager.connectToStatusManager(statusManager as unknown as AgentStatusManager);
 
       // Badge should show half circle (mixed, because "mixed" workspace counts as working)
-      expect(appLayer._getState().dockSetBadgeCalls.at(-1)).toEqual("◐");
+      expect(appLayer).toHaveDockBadge("◐");
     });
 
     it("ignores workspaces with none status", () => {
@@ -206,7 +203,7 @@ describe("BadgeManager Integration", () => {
       badgeManager.connectToStatusManager(statusManager as unknown as AgentStatusManager);
 
       // Badge should be empty (no workspaces with agents)
-      expect(appLayer._getState().dockSetBadgeCalls.at(-1)).toEqual("");
+      expect(appLayer).toHaveDockBadge("");
     });
   });
 
@@ -225,8 +222,6 @@ describe("BadgeManager Integration", () => {
 
       // Connect to status manager
       badgeManager.connectToStatusManager(statusManager as unknown as AgentStatusManager);
-      // Clear initial calls
-      const initialCalls = appLayer._getState().dockSetBadgeCalls.length;
 
       // Change from empty to all busy
       statusManager.setStatuses(
@@ -236,8 +231,7 @@ describe("BadgeManager Integration", () => {
       );
       statusManager.triggerStatusChange();
 
-      const newCalls = appLayer._getState().dockSetBadgeCalls.slice(initialCalls);
-      expect(newCalls).toEqual(["●"]);
+      expect(appLayer).toHaveDockBadge("●");
     });
 
     it("transitions from all-working to mixed when workspace becomes idle", () => {
@@ -261,8 +255,7 @@ describe("BadgeManager Integration", () => {
       );
 
       badgeManager.connectToStatusManager(statusManager as unknown as AgentStatusManager);
-      expect(appLayer._getState().dockSetBadgeCalls.at(-1)).toEqual("●");
-      const initialCalls = appLayer._getState().dockSetBadgeCalls.length;
+      expect(appLayer).toHaveDockBadge("●");
 
       // One workspace becomes idle
       statusManager.setStatuses(
@@ -273,8 +266,7 @@ describe("BadgeManager Integration", () => {
       );
       statusManager.triggerStatusChange();
 
-      const newCalls = appLayer._getState().dockSetBadgeCalls.slice(initialCalls);
-      expect(newCalls).toEqual(["◐"]);
+      expect(appLayer).toHaveDockBadge("◐");
     });
 
     it("transitions from mixed to none when all workspaces become idle", () => {
@@ -298,8 +290,7 @@ describe("BadgeManager Integration", () => {
       );
 
       badgeManager.connectToStatusManager(statusManager as unknown as AgentStatusManager);
-      expect(appLayer._getState().dockSetBadgeCalls.at(-1)).toEqual("◐");
-      const initialCalls = appLayer._getState().dockSetBadgeCalls.length;
+      expect(appLayer).toHaveDockBadge("◐");
 
       // All workspaces become idle
       statusManager.setStatuses(
@@ -310,8 +301,7 @@ describe("BadgeManager Integration", () => {
       );
       statusManager.triggerStatusChange();
 
-      const newCalls = appLayer._getState().dockSetBadgeCalls.slice(initialCalls);
-      expect(newCalls).toEqual([""]);
+      expect(appLayer).toHaveDockBadge("");
     });
   });
 
@@ -336,23 +326,56 @@ describe("BadgeManager Integration", () => {
       );
 
       badgeManager.connectToStatusManager(statusManager as unknown as AgentStatusManager);
-      expect(appLayer._getState().dockSetBadgeCalls.at(-1)).toEqual("●");
-      const initialCalls = appLayer._getState().dockSetBadgeCalls.length;
+      expect(appLayer).toHaveDockBadge("●");
 
       // Remove all workspaces
       statusManager.setStatuses(new Map());
       statusManager.triggerStatusChange();
 
       // Badge should be cleared
-      const newCalls = appLayer._getState().dockSetBadgeCalls.slice(initialCalls);
-      expect(newCalls).toEqual([""]);
+      expect(appLayer).toHaveDockBadge("");
     });
   });
 
   describe("Windows overlay icon", () => {
+    it("creates image in same ImageLayer that WindowLayer would use for lookup", () => {
+      // This test verifies the architectural constraint that BadgeManager and WindowLayer
+      // must share the same ImageLayer instance. If separate instances are used,
+      // the ImageHandle created by BadgeManager won't be found when WindowLayer
+      // calls getNativeImage(), causing the overlay to not display.
+      const platformInfo = createMockPlatformInfo({ platform: "win32" });
+      appLayer = createAppLayerMock({ platform: "win32" });
+      const sharedImageLayer = createImageLayerMock();
+
+      // Track the ImageHandle passed to setOverlayIcon
+      let capturedImageHandle: ImageHandle | null = null;
+      const mockWindowManager = {
+        setOverlayIcon: (image: ImageHandle | null) => {
+          capturedImageHandle = image;
+        },
+      };
+
+      const badgeManager = new BadgeManager(
+        platformInfo,
+        appLayer,
+        sharedImageLayer, // Using the shared instance
+        mockWindowManager as unknown as WindowManager,
+        SILENT_LOGGER
+      );
+
+      badgeManager.updateBadge("all-working");
+
+      // The image handle must exist in the shared ImageLayer and be valid
+      expect(capturedImageHandle).not.toBeNull();
+      expect(sharedImageLayer).toHaveImage(capturedImageHandle!.id, {
+        isEmpty: false,
+        size: { width: 16, height: 16 },
+      });
+    });
+
     it("generates image for mixed state", () => {
       const platformInfo = createMockPlatformInfo({ platform: "win32" });
-      appLayer = createBehavioralAppLayer({ platform: "win32" });
+      appLayer = createAppLayerMock({ platform: "win32" });
       const statusManager = createMockAgentStatusManager();
 
       const badgeManager = new BadgeManager(
@@ -373,14 +396,14 @@ describe("BadgeManager Integration", () => {
 
       badgeManager.connectToStatusManager(statusManager as unknown as AgentStatusManager);
 
-      expect(imageLayer._getState().images.size).toBe(1);
+      expect(imageLayer).toHaveImages([{ id: "image-1" }]);
       expect(windowManager.setOverlayIconCalls).toHaveLength(1);
       expect(windowManager.setOverlayIconCalls[0]?.description).toBe("Some workspaces ready");
     });
 
     it("generates image for all-working state", () => {
       const platformInfo = createMockPlatformInfo({ platform: "win32" });
-      appLayer = createBehavioralAppLayer({ platform: "win32" });
+      appLayer = createAppLayerMock({ platform: "win32" });
       const statusManager = createMockAgentStatusManager();
 
       const badgeManager = new BadgeManager(
@@ -401,7 +424,7 @@ describe("BadgeManager Integration", () => {
 
       badgeManager.connectToStatusManager(statusManager as unknown as AgentStatusManager);
 
-      expect(imageLayer._getState().images.size).toBe(1);
+      expect(imageLayer).toHaveImages([{ id: "image-1" }]);
       expect(windowManager.setOverlayIconCalls).toHaveLength(1);
       expect(windowManager.setOverlayIconCalls[0]?.description).toBe("All workspaces working");
     });
@@ -428,16 +451,16 @@ describe("BadgeManager Integration", () => {
       );
 
       badgeManager.connectToStatusManager(statusManager as unknown as AgentStatusManager);
-      expect(appLayer._getState().dockSetBadgeCalls.at(-1)).toEqual("●");
-      const initialCalls = appLayer._getState().dockSetBadgeCalls.length;
+      expect(appLayer).toHaveDockBadge("●");
 
       // Disconnect
       badgeManager.disconnect();
 
       // Badge should be cleared
-      const disconnectCalls = appLayer._getState().dockSetBadgeCalls.slice(initialCalls);
-      expect(disconnectCalls).toEqual([""]);
-      const afterDisconnectCalls = appLayer._getState().dockSetBadgeCalls.length;
+      expect(appLayer).toHaveDockBadge("");
+
+      // Take a snapshot after disconnect
+      const afterDisconnect = appLayer.$.snapshot();
 
       // Further status changes should not update badge
       statusManager.setStatuses(
@@ -447,8 +470,8 @@ describe("BadgeManager Integration", () => {
       );
       statusManager.triggerStatusChange();
 
-      // No new calls should have been made
-      expect(appLayer._getState().dockSetBadgeCalls.length).toBe(afterDisconnectCalls);
+      // State should be unchanged after status change
+      expect(appLayer).toBeUnchanged(afterDisconnect);
     });
   });
 });

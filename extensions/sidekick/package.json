@@ -3,6 +3,7 @@
   "displayName": "CodeHydra Sidekick",
   "description": "CodeHydra integration for VS Code",
   "version": "1.0.0-placeholder",
+  "type": "module",
   "publisher": "codehydra",
   "repository": {
     "type": "git",
@@ -14,15 +15,12 @@
   "activationEvents": [
     "onStartupFinished"
   ],
-  "main": "./dist/extension.js",
+  "main": "./dist/extension.cjs",
   "scripts": {
-    "build": "node esbuild.config.js"
+    "build": "vite build"
   },
   "dependencies": {
     "socket.io-client": "^4.7.0"
-  },
-  "devDependencies": {
-    "esbuild": "^0.24.0"
   },
   "contributes": {
     "commands": [
@@ -56,7 +54,8 @@
       "workbench.startupEditor": "none",
       "window.autoDetectColorScheme": true,
       "workbench.preferredDarkColorTheme": "Default Dark+",
-      "workbench.preferredLightColorTheme": "Default Light+"
+      "workbench.preferredLightColorTheme": "Default Light+",
+      "remote.autoForwardPorts": false
     }
   }
 }

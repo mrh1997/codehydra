@@ -460,9 +460,9 @@ All external system access goes through abstraction interfaces defined in `src/s
 
 | External System    | Interface              | Implementation                | Test Mock Factory                  |
 | ------------------ | ---------------------- | ----------------------------- | ---------------------------------- |
-| Filesystem         | `FileSystemLayer`      | `DefaultFileSystemLayer`      | `createMockFileSystemLayer()`      |
+| Filesystem         | `FileSystemLayer`      | `DefaultFileSystemLayer`      | `createFileSystemMock()`           |
 | HTTP requests      | `HttpClient`           | `DefaultNetworkLayer`         | `createMockHttpClient()`           |
-| Port operations    | `PortManager`          | `DefaultNetworkLayer`         | `createMockPortManager()`          |
+| Port operations    | `PortManager`          | `DefaultNetworkLayer`         | `createPortManagerMock()`          |
 | Process spawning   | `ProcessRunner`        | `ExecaProcessRunner`          | `createMockProcessRunner()`        |
 | Build info         | `BuildInfo`            | `ElectronBuildInfo`           | `createMockBuildInfo()`            |
 | Platform info      | `PlatformInfo`         | `NodePlatformInfo`            | `createMockPlatformInfo()`         |
@@ -564,17 +564,16 @@ The module provides factory functions for creating mock implementations:
 | `createMockPortManager()` | `PortManager` | Mock port availability        |
 
 ```typescript
-import { createMockHttpClient, createMockPortManager } from "../platform/network.test-utils";
+import { createMockHttpClient } from "../platform/network.test-utils";
+import { createPortManagerMock } from "../platform/port-manager.state-mock";
 
 const mockHttpClient = createMockHttpClient({
   response: new Response(JSON.stringify({ status: "ok" }), { status: 200 }),
 });
 
-const mockPortManager = createMockPortManager({
-  findFreePort: { port: 9999 },
-});
+const portManager = createPortManagerMock([9999]);
 
-const service = new SomeService(mockHttpClient, mockPortManager);
+const service = new SomeService(mockHttpClient, portManager);
 ```
 
 ### OpenCode SDK Integration
@@ -690,7 +689,7 @@ All methods throw `FileSystemError` (extends `ServiceError`) with mapped error c
 
 **Usage Pattern:**
 
-- Unit tests: Use `createMockFileSystemLayer()` from `filesystem.test-utils.ts`
+- Integration tests: Use `createFileSystemMock()` from `filesystem.state-mock.ts`
 - Integration tests: Use `DefaultFileSystemLayer()` for real filesystem operations
 - Boundary tests: `filesystem.boundary.test.ts` tests `DefaultFileSystemLayer` against real filesystem
 
@@ -1279,7 +1278,7 @@ The OpenCode integration provides real-time agent status monitoring for AI agent
 
 ### Port Discovery for CLI
 
-The sidekick extension calls `api.workspace.getOpencodePort()` on connect and sets the `CODEHYDRA_OPENCODE_PORT` environment variable for all new terminals. The wrapper script (`<app-data>/bin/opencode`) reads this env var to redirect `opencode` invocations to `opencode attach http://127.0.0.1:$PORT`.
+The sidekick extension calls `api.workspace.getOpenCodeSession()` on connect and sets the `CODEHYDRA_OPENCODE_PORT` and `CODEHYDRA_OPENCODE_SESSION_ID` environment variables for all new terminals. The wrapper script (`<app-data>/bin/opencode`) reads these env vars to redirect `opencode` invocations to `opencode attach http://127.0.0.1:$PORT --session $SESSION_ID`.
 
 ### MCP Integration
 
@@ -1482,12 +1481,13 @@ CodeHydra and VS Code extensions communicate via Socket.IO WebSocket connection.
 
 **Client → Server (API Calls):**
 
-| Event                          | Payload                 | Response                              | Description                      |
-| ------------------------------ | ----------------------- | ------------------------------------- | -------------------------------- |
-| `api:workspace:getStatus`      | (none)                  | `PluginResult<WorkspaceStatus>`       | Get workspace dirty/agent status |
-| `api:workspace:getMetadata`    | (none)                  | `PluginResult<Record<string,string>>` | Get all workspace metadata       |
-| `api:workspace:setMetadata`    | `SetMetadataRequest`    | `PluginResult<void>`                  | Set or delete metadata key       |
-| `api:workspace:executeCommand` | `ExecuteCommandRequest` | `PluginResult<unknown>`               | Execute a VS Code command        |
+| Event                          | Payload                  | Response                              | Description                       |
+| ------------------------------ | ------------------------ | ------------------------------------- | --------------------------------- |
+| `api:workspace:getStatus`      | (none)                   | `PluginResult<WorkspaceStatus>`       | Get workspace dirty/agent status  |
+| `api:workspace:getMetadata`    | (none)                   | `PluginResult<Record<string,string>>` | Get all workspace metadata        |
+| `api:workspace:setMetadata`    | `SetMetadataRequest`     | `PluginResult<void>`                  | Set or delete metadata key        |
+| `api:workspace:executeCommand` | `ExecuteCommandRequest`  | `PluginResult<unknown>`               | Execute a VS Code command         |
+| `api:workspace:create`         | `WorkspaceCreateRequest` | `PluginResult<Workspace>`             | Create a new workspace in project |
 
 **Types:**
 
@@ -1568,7 +1568,7 @@ CodeHydra downloads code-server and opencode binaries from GitHub releases inste
 │                         Binary Download Flow                                │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  npm install                          App Setup (Production)                │
+│  pnpm install                         App Setup (Production)                │
 │       │                                      │                              │
 │       v                                      v                              │
 │  ┌─────────────────┐                 ┌─────────────────┐                    │
@@ -1605,7 +1605,7 @@ Binary versions are defined in `src/services/binary-download/versions.ts`:
 - `CODE_SERVER_VERSION` - e.g., "4.106.3"
 - `OPENCODE_VERSION` - e.g., "0.1.47"
 
-**Development**: `npm install` runs the postinstall script which downloads binaries to `./app-data/`.
+**Development**: `pnpm install` runs the postinstall script which downloads binaries to `./app-data/`.
 
 **Production**: The VscodeSetupService downloads binaries to the user's app-data directory during first-run setup. If `CURRENT_SETUP_VERSION` is incremented (which happens when versions change), existing installations re-run setup on next launch.
 
@@ -1686,9 +1686,9 @@ extensions/
 
 ### Build Process
 
-1. `npm run build:extensions` - auto-discovers extension folders, packages them to `dist/extensions/`, downloads external extensions from VS Code Marketplace, and generates `manifest.json` (flat array of all extensions)
+1. `pnpm build:extensions` - auto-discovers extension folders, packages them to `dist/extensions/`, downloads external extensions from VS Code Marketplace, and generates `manifest.json` (flat array of all extensions)
 2. `vite-plugin-static-copy` - copies `dist/extensions/*` to `out/main/assets/` during build
-3. `npm run build` - runs both steps sequentially
+3. `pnpm build` - runs both steps sequentially
 
 **Note:** External extensions are downloaded during the build process, not at runtime. This ensures reproducible builds and eliminates runtime network dependencies for extension installation.
 
@@ -1709,11 +1709,11 @@ dist/
 
 **Distribution commands:**
 
-| Command              | Platform   | Output                          |
-| -------------------- | ---------- | ------------------------------- |
-| `npm run dist`       | Current OS | Platform-specific distributable |
-| `npm run dist:win`   | Windows    | `dist/CodeHydra-x.x.x.exe`      |
-| `npm run dist:linux` | Linux      | `dist/CodeHydra-x.x.x.AppImage` |
+| Command           | Platform   | Output                          |
+| ----------------- | ---------- | ------------------------------- |
+| `pnpm dist`       | Current OS | Platform-specific distributable |
+| `pnpm dist:win`   | Windows    | `dist/CodeHydra-x.x.x.exe`      |
+| `pnpm dist:linux` | Linux      | `dist/CodeHydra-x.x.x.AppImage` |
 
 **Note:** Cross-platform builds have limitations - Windows portable can only be built on Windows, Linux AppImage can only be built on Linux.
 

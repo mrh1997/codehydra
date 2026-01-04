@@ -106,6 +106,44 @@ export interface LogApi {
 }
 
 /**
+ * Initial prompt for workspace creation.
+ * Can be a simple string (uses default agent) or an object with agent selection.
+ */
+export type InitialPrompt = string | { readonly prompt: string; readonly agent?: string };
+
+/**
+ * Options for workspace creation.
+ */
+export interface WorkspaceCreateOptions {
+  /** Optional initial prompt to send after workspace is created */
+  readonly initialPrompt?: InitialPrompt;
+  /** If true, don't switch to the new workspace (default: false = switch to it) */
+  readonly keepInBackground?: boolean;
+}
+
+/**
+ * Workspace information returned from creation.
+ */
+export interface Workspace {
+  /** Workspace name (also the branch name) */
+  readonly name: string;
+  /** Absolute path to the workspace directory */
+  readonly path: string;
+  /** Base branch this workspace was created from */
+  readonly base: string;
+}
+
+/**
+ * OpenCode session information.
+ */
+export interface OpenCodeSession {
+  /** Port number the OpenCode server is running on */
+  readonly port: number;
+  /** Session ID for the primary session */
+  readonly sessionId: string;
+}
+
+/**
  * Agent status counts for workspaces with active AI agents.
  */
 export interface AgentStatusCounts {
@@ -157,22 +195,22 @@ export interface WorkspaceApi {
   getStatus(): Promise<WorkspaceStatus>;
 
   /**
-   * Get the OpenCode server port for this workspace.
-   * Returns the port number if the OpenCode server is running, or null if not running.
+   * Get the OpenCode session info for this workspace.
+   * Returns the session info if the OpenCode server is running, or null if not running.
    *
-   * @returns Port number or null if server not running
+   * @returns Session info (port and sessionId) or null if server not running
    * @throws Error if not connected or request fails
    *
    * @example
    * ```typescript
-   * const port = await api.workspace.getOpencodePort();
-   * if (port !== null) {
-   *   console.log(`OpenCode server running on port ${port}`);
-   *   // Connect to OpenCode server at http://localhost:${port}
+   * const session = await api.workspace.getOpenCodeSession();
+   * if (session !== null) {
+   *   console.log(`OpenCode server running on port ${session.port}`);
+   *   console.log(`Primary session: ${session.sessionId}`);
    * }
    * ```
    */
-  getOpencodePort(): Promise<number | null>;
+  getOpenCodeSession(): Promise<OpenCodeSession | null>;
 
   /**
    * Restart the OpenCode server for this workspace, preserving the same port.
@@ -252,6 +290,38 @@ export interface WorkspaceApi {
    * ```
    */
   executeCommand(command: string, args?: readonly unknown[]): Promise<unknown>;
+
+  /**
+   * Create a new workspace in the same project as the current workspace.
+   *
+   * The new workspace is created from the specified base branch. If an initial
+   * prompt is provided, it will be sent to the OpenCode agent after the workspace
+   * is ready (fire-and-forget).
+   *
+   * @param name - Name for the new workspace (becomes the branch name)
+   * @param base - Base branch to create the workspace from
+   * @param options - Optional creation options
+   * @returns The created workspace information
+   * @throws Error if not connected, name/base invalid, or creation fails
+   *
+   * @example
+   * ```typescript
+   * // Create workspace with no initial prompt
+   * const ws = await api.workspace.create('feature-login', 'main');
+   *
+   * // Create workspace with initial prompt (string)
+   * const ws = await api.workspace.create('feature-auth', 'main', {
+   *   initialPrompt: 'Implement OAuth2 authentication'
+   * });
+   *
+   * // Create workspace with initial prompt and specific agent
+   * const ws = await api.workspace.create('fix-bug-123', 'main', {
+   *   initialPrompt: { prompt: 'Fix the login bug', agent: 'coder' },
+   *   keepInBackground: true  // Don't switch to the new workspace
+   * });
+   * ```
+   */
+  create(name: string, base: string, options?: WorkspaceCreateOptions): Promise<Workspace>;
 }
 
 /**

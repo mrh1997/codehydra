@@ -7,9 +7,10 @@
 import path from "path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { CodeServerManager, urlForFolder } from "./code-server-manager";
-import { createMockProcessRunner, createMockSpawnedProcess } from "../platform/process.test-utils";
-import { createMockHttpClient, createMockPortManager } from "../platform/network.test-utils";
-import type { HttpClient, PortManager, HttpRequestOptions } from "../platform/network";
+import { createMockProcessRunner, type MockProcessRunner } from "../platform/process.state-mock";
+import { createPortManagerMock } from "../platform/network.test-utils";
+import { createMockHttpClient } from "../platform/http-client.state-mock";
+import type { HttpClient, PortManager } from "../platform/network";
 import { SILENT_LOGGER } from "../logging";
 
 const testLogger = SILENT_LOGGER;
@@ -18,38 +19,38 @@ describe("urlForFolder", () => {
   it("generates correct URL with folder path", () => {
     const url = urlForFolder(8080, "/home/user/projects/my-repo");
 
-    expect(url).toBe("http://localhost:8080/?folder=/home/user/projects/my-repo");
+    expect(url).toBe("http://127.0.0.1:8080/?folder=/home/user/projects/my-repo");
   });
 
   it("encodes spaces in folder path", () => {
     const url = urlForFolder(8080, "/home/user/My Projects/repo");
 
-    expect(url).toBe("http://localhost:8080/?folder=/home/user/My%20Projects/repo");
+    expect(url).toBe("http://127.0.0.1:8080/?folder=/home/user/My%20Projects/repo");
   });
 
   it("encodes special characters in path", () => {
     const url = urlForFolder(8080, "/home/user/project#1");
 
-    expect(url).toBe("http://localhost:8080/?folder=/home/user/project%231");
+    expect(url).toBe("http://127.0.0.1:8080/?folder=/home/user/project%231");
   });
 
   it("handles Windows paths", () => {
     // Windows paths need to be converted for URL
     const url = urlForFolder(8080, "C:/Users/user/projects/repo");
 
-    expect(url).toBe("http://localhost:8080/?folder=/C:/Users/user/projects/repo");
+    expect(url).toBe("http://127.0.0.1:8080/?folder=/C:/Users/user/projects/repo");
   });
 
   it("handles unicode characters", () => {
     const url = urlForFolder(8080, "/home/user/cafe");
 
-    expect(url).toBe("http://localhost:8080/?folder=/home/user/cafe");
+    expect(url).toBe("http://127.0.0.1:8080/?folder=/home/user/cafe");
   });
 });
 
 describe("CodeServerManager", () => {
   let manager: CodeServerManager;
-  let mockProcessRunner: ReturnType<typeof createMockProcessRunner>;
+  let mockProcessRunner: MockProcessRunner;
   let mockHttpClient: HttpClient;
   let mockPortManager: PortManager;
 
@@ -59,6 +60,8 @@ describe("CodeServerManager", () => {
     extensionsDir: "/tmp/code-server-extensions",
     userDataDir: "/tmp/code-server-user-data",
     binDir: "/app/bin",
+    codeServerDir: "/app/code-server-dir",
+    opencodeDir: "/app/opencode-dir",
   };
 
   beforeEach(() => {
@@ -66,11 +69,9 @@ describe("CodeServerManager", () => {
     mockProcessRunner = createMockProcessRunner();
     // Mock HttpClient that returns 200 for health checks
     mockHttpClient = createMockHttpClient({
-      response: new Response("", { status: 200 }),
+      defaultResponse: { status: 200 },
     });
-    mockPortManager = createMockPortManager({
-      findFreePort: { port: 8080 },
-    });
+    mockPortManager = createPortManagerMock([8080]);
     manager = new CodeServerManager(
       defaultConfig,
       mockProcessRunner,
@@ -92,7 +93,7 @@ describe("CodeServerManager", () => {
   describe("constructor", () => {
     it("accepts HttpClient and PortManager", () => {
       const httpClient = createMockHttpClient();
-      const portManager = createMockPortManager();
+      const portManager = createPortManagerMock();
       const processRunner = createMockProcessRunner();
       const config = {
         binaryPath: "/usr/bin/code-server",
@@ -100,6 +101,8 @@ describe("CodeServerManager", () => {
         extensionsDir: "/tmp/code-server-extensions",
         userDataDir: "/tmp/code-server-user-data",
         binDir: "/app/bin",
+        codeServerDir: "/app/code-server-dir",
+        opencodeDir: "/app/opencode-dir",
       };
 
       const instance = new CodeServerManager(
@@ -156,10 +159,7 @@ describe("CodeServerManager", () => {
     it("uses portManager.findFreePort()", async () => {
       const fetchMock = vi.fn().mockResolvedValue(new Response("", { status: 200 }));
       mockHttpClient = { fetch: fetchMock };
-      const findFreePortMock = vi.fn().mockResolvedValue(9999);
-      mockPortManager = {
-        findFreePort: findFreePortMock,
-      };
+      const portManager = createPortManagerMock([9999]);
       manager = new CodeServerManager(
         {
           binaryPath: "/usr/bin/code-server",
@@ -167,17 +167,19 @@ describe("CodeServerManager", () => {
           extensionsDir: "/tmp/code-server-extensions",
           userDataDir: "/tmp/code-server-user-data",
           binDir: "/app/bin",
+          codeServerDir: "/app/code-server-dir",
+          opencodeDir: "/app/opencode-dir",
         },
         mockProcessRunner,
         mockHttpClient,
-        mockPortManager,
+        portManager,
         testLogger
       );
 
       const port = await manager.ensureRunning();
 
-      expect(findFreePortMock).toHaveBeenCalled();
       expect(port).toBe(9999);
+      expect(portManager.$.allocatedPorts).toContain(9999);
     });
 
     it("returns same port when already running", async () => {
@@ -196,20 +198,17 @@ describe("CodeServerManager", () => {
       const [port1, port2] = await Promise.all([manager.ensureRunning(), manager.ensureRunning()]);
 
       expect(port1).toBe(port2);
-      // processRunner.run should only be called once
-      expect(mockProcessRunner.run).toHaveBeenCalledTimes(1);
+      // Verify only one spawn occurred
+      expect(mockProcessRunner).toHaveSpawned([{ command: "/usr/bin/code-server" }]);
     });
   });
 
   describe("health check", () => {
     it("uses httpClient.fetch() with 1s timeout", async () => {
-      let capturedOptions: HttpRequestOptions | undefined;
-      mockHttpClient = createMockHttpClient({
-        implementation: async (_url: string, options?: HttpRequestOptions) => {
-          capturedOptions = options;
-          return new Response("", { status: 200 });
-        },
+      const mock = createMockHttpClient({
+        defaultResponse: { status: 200 },
       });
+      mockHttpClient = mock;
       manager = new CodeServerManager(
         {
           binaryPath: "/usr/bin/code-server",
@@ -217,6 +216,8 @@ describe("CodeServerManager", () => {
           extensionsDir: "/tmp/code-server-extensions",
           userDataDir: "/tmp/code-server-user-data",
           binDir: "/app/bin",
+          codeServerDir: "/app/code-server-dir",
+          opencodeDir: "/app/opencode-dir",
         },
         mockProcessRunner,
         mockHttpClient,
@@ -226,12 +227,14 @@ describe("CodeServerManager", () => {
 
       await manager.ensureRunning();
 
-      expect(capturedOptions?.timeout).toBe(1000);
+      // Check captured options from mock state
+      expect(mock.$.requests.length).toBeGreaterThan(0);
+      expect(mock.$.requests[0]?.options?.timeout).toBe(1000);
     });
 
     it("returns true on 200 status", async () => {
       mockHttpClient = createMockHttpClient({
-        response: new Response("", { status: 200 }),
+        defaultResponse: { status: 200 },
       });
       manager = new CodeServerManager(
         {
@@ -240,6 +243,8 @@ describe("CodeServerManager", () => {
           extensionsDir: "/tmp/code-server-extensions",
           userDataDir: "/tmp/code-server-user-data",
           binDir: "/app/bin",
+          codeServerDir: "/app/code-server-dir",
+          opencodeDir: "/app/opencode-dir",
         },
         mockProcessRunner,
         mockHttpClient,
@@ -255,17 +260,17 @@ describe("CodeServerManager", () => {
     });
 
     it("returns false on non-200 status (retries until success)", async () => {
+      // Use vi.fn() for stateful behavior: first returns 503, then 200
       let callCount = 0;
-      mockHttpClient = createMockHttpClient({
-        implementation: async () => {
-          callCount++;
-          // First few calls return 503, then 200
-          if (callCount < 3) {
-            return new Response("", { status: 503 });
-          }
-          return new Response("", { status: 200 });
-        },
+      const fetchMock = vi.fn(async () => {
+        callCount++;
+        // First few calls return 503, then 200
+        if (callCount < 3) {
+          return new Response("", { status: 503 });
+        }
+        return new Response("", { status: 200 });
       });
+      mockHttpClient = { fetch: fetchMock };
       manager = new CodeServerManager(
         {
           binaryPath: "/usr/bin/code-server",
@@ -273,6 +278,8 @@ describe("CodeServerManager", () => {
           extensionsDir: "/tmp/code-server-extensions",
           userDataDir: "/tmp/code-server-user-data",
           binDir: "/app/bin",
+          codeServerDir: "/app/code-server-dir",
+          opencodeDir: "/app/opencode-dir",
         },
         mockProcessRunner,
         mockHttpClient,
@@ -287,17 +294,17 @@ describe("CodeServerManager", () => {
     });
 
     it("returns false on network error", async () => {
+      // Use vi.fn() for stateful behavior: first throws, then succeeds
       let callCount = 0;
-      mockHttpClient = createMockHttpClient({
-        implementation: async () => {
-          callCount++;
-          // First few calls throw, then succeed
-          if (callCount < 3) {
-            throw new Error("Connection refused");
-          }
-          return new Response("", { status: 200 });
-        },
+      const fetchMock = vi.fn(async () => {
+        callCount++;
+        // First few calls throw, then succeed
+        if (callCount < 3) {
+          throw new Error("Connection refused");
+        }
+        return new Response("", { status: 200 });
       });
+      mockHttpClient = { fetch: fetchMock };
       manager = new CodeServerManager(
         {
           binaryPath: "/usr/bin/code-server",
@@ -305,6 +312,8 @@ describe("CodeServerManager", () => {
           extensionsDir: "/tmp/code-server-extensions",
           userDataDir: "/tmp/code-server-user-data",
           binDir: "/app/bin",
+          codeServerDir: "/app/code-server-dir",
+          opencodeDir: "/app/opencode-dir",
         },
         mockProcessRunner,
         mockHttpClient,
@@ -401,13 +410,15 @@ describe("CodeServerManager (with full DI)", () => {
     it("accepts all four dependencies", () => {
       const processRunner = createMockProcessRunner();
       const httpClient = createMockHttpClient();
-      const portManager = createMockPortManager();
+      const portManager = createPortManagerMock();
       const config = {
         binaryPath: "/usr/bin/code-server",
         runtimeDir: "/tmp/code-server-runtime",
         extensionsDir: "/tmp/code-server-extensions",
         userDataDir: "/tmp/code-server-user-data",
         binDir: "/app/bin",
+        codeServerDir: "/app/code-server-dir",
+        opencodeDir: "/app/opencode-dir",
       };
 
       const manager = new CodeServerManager(
@@ -422,18 +433,21 @@ describe("CodeServerManager (with full DI)", () => {
     });
 
     it("uses provided ProcessRunner for spawning processes", async () => {
-      const mockProc = createMockSpawnedProcess({ pid: 99999 });
-      const processRunner = createMockProcessRunner(mockProc);
-      const httpClient = createMockHttpClient({
-        response: new Response("", { status: 200 }),
+      const processRunner = createMockProcessRunner({
+        onSpawn: () => ({ pid: 99999 }),
       });
-      const portManager = createMockPortManager({ findFreePort: { port: 8080 } });
+      const httpClient = createMockHttpClient({
+        defaultResponse: { status: 200 },
+      });
+      const portManager = createPortManagerMock([8080]);
       const config = {
         binaryPath: "/usr/bin/code-server",
         runtimeDir: "/tmp/code-server-runtime",
         extensionsDir: "/tmp/code-server-extensions",
         userDataDir: "/tmp/code-server-user-data",
         binDir: "/app/bin",
+        codeServerDir: "/app/code-server-dir",
+        opencodeDir: "/app/opencode-dir",
       };
 
       const manager = new CodeServerManager(
@@ -446,11 +460,13 @@ describe("CodeServerManager (with full DI)", () => {
 
       await manager.ensureRunning();
 
-      expect(processRunner.run).toHaveBeenCalledWith(
-        config.binaryPath,
-        expect.arrayContaining(["--port", "8080", "--auth", "none"]),
-        expect.objectContaining({ cwd: config.runtimeDir })
-      );
+      expect(processRunner).toHaveSpawned([
+        {
+          command: config.binaryPath,
+          args: expect.arrayContaining(["--port", "8080", "--auth", "none"]) as unknown as string[],
+          cwd: config.runtimeDir,
+        },
+      ]);
       expect(manager.pid()).toBe(99999);
     });
   });
@@ -458,22 +474,24 @@ describe("CodeServerManager (with full DI)", () => {
   describe("stop with timeout escalation", () => {
     it("calls kill with graceful shutdown timeouts", async () => {
       // Process exits cleanly after SIGTERM
-      const mockProc = createMockSpawnedProcess({
-        pid: 12345,
-        killResult: { success: true, reason: "SIGTERM" },
-        waitResult: { exitCode: 0, stdout: "", stderr: "" },
+      const processRunner = createMockProcessRunner({
+        onSpawn: () => ({
+          pid: 12345,
+          killResult: { success: true, reason: "SIGTERM" },
+        }),
       });
-      const processRunner = createMockProcessRunner(mockProc);
       const httpClient = createMockHttpClient({
-        response: new Response("", { status: 200 }),
+        defaultResponse: { status: 200 },
       });
-      const portManager = createMockPortManager({ findFreePort: { port: 8080 } });
+      const portManager = createPortManagerMock([8080]);
       const config = {
         binaryPath: "/usr/bin/code-server",
         runtimeDir: "/tmp/code-server-runtime",
         extensionsDir: "/tmp/code-server-extensions",
         userDataDir: "/tmp/code-server-user-data",
         binDir: "/app/bin",
+        codeServerDir: "/app/code-server-dir",
+        opencodeDir: "/app/opencode-dir",
       };
 
       const manager = new CodeServerManager(
@@ -488,29 +506,30 @@ describe("CodeServerManager (with full DI)", () => {
       await manager.stop();
 
       // Should call kill with graceful shutdown timeouts (1s SIGTERM, 1s SIGKILL)
-      expect(mockProc.kill).toHaveBeenCalledWith(1000, 1000);
-      // kill() handles the SIGTERM→SIGKILL escalation internally
-      expect(mockProc.kill).toHaveBeenCalledTimes(1);
+      expect(processRunner.$.spawned(0)).toHaveBeenKilledWith(1000, 1000);
     });
 
     it("handles SIGKILL escalation result", async () => {
       // Process needed SIGKILL (didn't respond to SIGTERM)
-      const mockProc = createMockSpawnedProcess({
-        pid: 12345,
-        killResult: { success: true, reason: "SIGKILL" },
-        waitResult: { exitCode: null, stdout: "", stderr: "", signal: "SIGKILL" },
+      const processRunner = createMockProcessRunner({
+        onSpawn: () => ({
+          pid: 12345,
+          signal: "SIGKILL",
+          killResult: { success: true, reason: "SIGKILL" },
+        }),
       });
-      const processRunner = createMockProcessRunner(mockProc);
       const httpClient = createMockHttpClient({
-        response: new Response("", { status: 200 }),
+        defaultResponse: { status: 200 },
       });
-      const portManager = createMockPortManager({ findFreePort: { port: 8080 } });
+      const portManager = createPortManagerMock([8080]);
       const config = {
         binaryPath: "/usr/bin/code-server",
         runtimeDir: "/tmp/code-server-runtime",
         extensionsDir: "/tmp/code-server-extensions",
         userDataDir: "/tmp/code-server-user-data",
         binDir: "/app/bin",
+        codeServerDir: "/app/code-server-dir",
+        opencodeDir: "/app/opencode-dir",
       };
 
       const manager = new CodeServerManager(
@@ -526,8 +545,7 @@ describe("CodeServerManager (with full DI)", () => {
 
       // Should call kill with graceful shutdown timeouts (1s SIGTERM, 1s SIGKILL)
       // The new kill() API handles SIGTERM→SIGKILL escalation internally
-      expect(mockProc.kill).toHaveBeenCalledWith(1000, 1000);
-      expect(mockProc.kill).toHaveBeenCalledTimes(1);
+      expect(processRunner.$.spawned(0)).toHaveBeenKilledWith(1000, 1000);
     });
   });
 });
@@ -539,23 +557,20 @@ describe("CodeServerManager (PATH and EDITOR)", () => {
     // Set up a known PATH value using the platform's delimiter
     process.env.PATH = `/usr/bin${path.delimiter}/usr/local/bin`;
 
-    let capturedEnv: NodeJS.ProcessEnv | undefined;
-    const mockProc = createMockSpawnedProcess({ pid: 12345 });
-    const processRunner = {
-      run: vi.fn((_cmd: string, _args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
-        capturedEnv = options?.env;
-        return mockProc;
-      }),
-    };
+    const processRunner = createMockProcessRunner({
+      onSpawn: () => ({ pid: 12345 }),
+    });
 
-    const httpClient = createMockHttpClient({ response: new Response("", { status: 200 }) });
-    const portManager = createMockPortManager({ findFreePort: { port: 8080 } });
+    const httpClient = createMockHttpClient({ defaultResponse: { status: 200 } });
+    const portManager = createPortManagerMock([8080]);
     const config = {
       binaryPath: "/usr/bin/code-server",
       runtimeDir: "/tmp/runtime",
       extensionsDir: "/tmp/extensions",
       userDataDir: "/tmp/user-data",
       binDir: "/app/bin",
+      codeServerDir: "/app/code-server-dir",
+      opencodeDir: "/app/opencode-dir",
     };
 
     const manager = new CodeServerManager(
@@ -572,7 +587,8 @@ describe("CodeServerManager (PATH and EDITOR)", () => {
 
     // Verify PATH uses platform's separator (path.delimiter)
     // This test validates that the code correctly uses path.delimiter
-    expect(capturedEnv?.PATH).toBe(
+    const spawned = processRunner.$.spawned(0);
+    expect(spawned.$.env?.PATH).toBe(
       `/app/bin${path.delimiter}/usr/bin${path.delimiter}/usr/local/bin`
     );
   });
@@ -585,23 +601,20 @@ describe("CodeServerManager (PATH and EDITOR)", () => {
     // Note: On Windows, env vars are case-insensitive, so we only set PATH (not Path)
     process.env.PATH = `/existing/path${path.delimiter}/another/path`;
 
-    let capturedEnv: NodeJS.ProcessEnv | undefined;
-    const mockProc = createMockSpawnedProcess({ pid: 12345 });
-    const processRunner = {
-      run: vi.fn((_cmd: string, _args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
-        capturedEnv = options?.env;
-        return mockProc;
-      }),
-    };
+    const processRunner = createMockProcessRunner({
+      onSpawn: () => ({ pid: 12345 }),
+    });
 
-    const httpClient = createMockHttpClient({ response: new Response("", { status: 200 }) });
-    const portManager = createMockPortManager({ findFreePort: { port: 8080 } });
+    const httpClient = createMockHttpClient({ defaultResponse: { status: 200 } });
+    const portManager = createPortManagerMock([8080]);
     const config = {
       binaryPath: "/usr/bin/code-server",
       runtimeDir: "/tmp/runtime",
       extensionsDir: "/tmp/extensions",
       userDataDir: "/tmp/user-data",
       binDir: "/app/bin",
+      codeServerDir: "/app/code-server-dir",
+      opencodeDir: "/app/opencode-dir",
     };
 
     const manager = new CodeServerManager(
@@ -617,11 +630,12 @@ describe("CodeServerManager (PATH and EDITOR)", () => {
     process.env.PATH = originalPath;
 
     // Verify binDir is prepended correctly
-    expect(capturedEnv?.PATH).toContain("/app/bin");
-    expect(capturedEnv?.PATH?.indexOf("/app/bin")).toBe(0);
+    const spawned = processRunner.$.spawned(0);
+    expect(spawned.$.env?.PATH).toContain("/app/bin");
+    expect(spawned.$.env?.PATH?.indexOf("/app/bin")).toBe(0);
     // Verify original PATH entries are preserved
-    expect(capturedEnv?.PATH).toContain("/existing/path");
-    expect(capturedEnv?.PATH).toContain("/another/path");
+    expect(spawned.$.env?.PATH).toContain("/existing/path");
+    expect(spawned.$.env?.PATH).toContain("/another/path");
   });
 
   it("reads from env.Path when env.PATH is undefined (Windows case sensitivity)", async () => {
@@ -634,23 +648,20 @@ describe("CodeServerManager (PATH and EDITOR)", () => {
     delete process.env.PATH;
     process.env.Path = `/usr/bin${path.delimiter}/usr/local/bin`;
 
-    let capturedEnv: NodeJS.ProcessEnv | undefined;
-    const mockProc = createMockSpawnedProcess({ pid: 12345 });
-    const processRunner = {
-      run: vi.fn((_cmd: string, _args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
-        capturedEnv = options?.env;
-        return mockProc;
-      }),
-    };
+    const processRunner = createMockProcessRunner({
+      onSpawn: () => ({ pid: 12345 }),
+    });
 
-    const httpClient = createMockHttpClient({ response: new Response("", { status: 200 }) });
-    const portManager = createMockPortManager({ findFreePort: { port: 8080 } });
+    const httpClient = createMockHttpClient({ defaultResponse: { status: 200 } });
+    const portManager = createPortManagerMock([8080]);
     const config = {
       binaryPath: "/usr/bin/code-server",
       runtimeDir: "/tmp/runtime",
       extensionsDir: "/tmp/extensions",
       userDataDir: "/tmp/user-data",
       binDir: "/app/bin",
+      codeServerDir: "/app/code-server-dir",
+      opencodeDir: "/app/opencode-dir",
     };
 
     const manager = new CodeServerManager(
@@ -675,12 +686,13 @@ describe("CodeServerManager (PATH and EDITOR)", () => {
     }
 
     // Verify PATH contains original Path entries (was read correctly)
-    expect(capturedEnv?.PATH).toContain("/usr/bin");
-    expect(capturedEnv?.PATH).toContain("/usr/local/bin");
+    const spawned = processRunner.$.spawned(0);
+    expect(spawned.$.env?.PATH).toContain("/usr/bin");
+    expect(spawned.$.env?.PATH).toContain("/usr/local/bin");
     // Verify binDir is prepended
-    expect(capturedEnv?.PATH?.indexOf("/app/bin")).toBe(0);
+    expect(spawned.$.env?.PATH?.indexOf("/app/bin")).toBe(0);
     // Verify Path was removed to avoid duplicates
-    expect(capturedEnv?.Path).toBeUndefined();
+    expect(spawned.$.env?.Path).toBeUndefined();
   });
 
   it("sets binDir as PATH when both PATH and Path are undefined", async () => {
@@ -692,23 +704,20 @@ describe("CodeServerManager (PATH and EDITOR)", () => {
     delete process.env.PATH;
     delete process.env.Path;
 
-    let capturedEnv: NodeJS.ProcessEnv | undefined;
-    const mockProc = createMockSpawnedProcess({ pid: 12345 });
-    const processRunner = {
-      run: vi.fn((_cmd: string, _args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
-        capturedEnv = options?.env;
-        return mockProc;
-      }),
-    };
+    const processRunner = createMockProcessRunner({
+      onSpawn: () => ({ pid: 12345 }),
+    });
 
-    const httpClient = createMockHttpClient({ response: new Response("", { status: 200 }) });
-    const portManager = createMockPortManager({ findFreePort: { port: 8080 } });
+    const httpClient = createMockHttpClient({ defaultResponse: { status: 200 } });
+    const portManager = createPortManagerMock([8080]);
     const config = {
       binaryPath: "/usr/bin/code-server",
       runtimeDir: "/tmp/runtime",
       extensionsDir: "/tmp/extensions",
       userDataDir: "/tmp/user-data",
       binDir: "/app/bin",
+      codeServerDir: "/app/code-server-dir",
+      opencodeDir: "/app/opencode-dir",
     };
 
     const manager = new CodeServerManager(
@@ -731,27 +740,25 @@ describe("CodeServerManager (PATH and EDITOR)", () => {
     // Verify PATH starts with binDir followed by delimiter (and empty string from the original undefined PATH)
     // Use path.delimiter to build the expected pattern for the current platform
     const expectedStart = `/app/bin${path.delimiter}`;
-    expect(capturedEnv?.PATH?.startsWith(expectedStart)).toBe(true);
+    const spawned = processRunner.$.spawned(0);
+    expect(spawned.$.env?.PATH?.startsWith(expectedStart)).toBe(true);
   });
 
   it("prepends binDir to PATH", async () => {
-    let capturedEnv: NodeJS.ProcessEnv | undefined;
-    const mockProc = createMockSpawnedProcess({ pid: 12345 });
-    const processRunner = {
-      run: vi.fn((_cmd: string, _args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
-        capturedEnv = options?.env;
-        return mockProc;
-      }),
-    };
+    const processRunner = createMockProcessRunner({
+      onSpawn: () => ({ pid: 12345 }),
+    });
 
-    const httpClient = createMockHttpClient({ response: new Response("", { status: 200 }) });
-    const portManager = createMockPortManager({ findFreePort: { port: 8080 } });
+    const httpClient = createMockHttpClient({ defaultResponse: { status: 200 } });
+    const portManager = createPortManagerMock([8080]);
     const config = {
       binaryPath: "/usr/bin/code-server",
       runtimeDir: "/tmp/runtime",
       extensionsDir: "/tmp/extensions",
       userDataDir: "/tmp/user-data",
       binDir: "/app/bin",
+      codeServerDir: "/app/code-server-dir",
+      opencodeDir: "/app/opencode-dir",
     };
 
     const manager = new CodeServerManager(
@@ -763,7 +770,8 @@ describe("CodeServerManager (PATH and EDITOR)", () => {
     );
     await manager.ensureRunning();
 
-    expect(capturedEnv?.PATH).toMatch(/^\/app\/bin/);
+    const spawned = processRunner.$.spawned(0);
+    expect(spawned.$.env?.PATH).toMatch(/^\/app\/bin/);
   });
 
   it("preserves existing PATH entries", async () => {
@@ -771,23 +779,20 @@ describe("CodeServerManager (PATH and EDITOR)", () => {
     const originalPath = process.env.PATH;
     process.env.PATH = "/usr/bin:/usr/local/bin";
 
-    let capturedEnv: NodeJS.ProcessEnv | undefined;
-    const mockProc = createMockSpawnedProcess({ pid: 12345 });
-    const processRunner = {
-      run: vi.fn((_cmd: string, _args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
-        capturedEnv = options?.env;
-        return mockProc;
-      }),
-    };
+    const processRunner = createMockProcessRunner({
+      onSpawn: () => ({ pid: 12345 }),
+    });
 
-    const httpClient = createMockHttpClient({ response: new Response("", { status: 200 }) });
-    const portManager = createMockPortManager({ findFreePort: { port: 8080 } });
+    const httpClient = createMockHttpClient({ defaultResponse: { status: 200 } });
+    const portManager = createPortManagerMock([8080]);
     const config = {
       binaryPath: "/usr/bin/code-server",
       runtimeDir: "/tmp/runtime",
       extensionsDir: "/tmp/extensions",
       userDataDir: "/tmp/user-data",
       binDir: "/app/bin",
+      codeServerDir: "/app/code-server-dir",
+      opencodeDir: "/app/opencode-dir",
     };
 
     const manager = new CodeServerManager(
@@ -802,28 +807,26 @@ describe("CodeServerManager (PATH and EDITOR)", () => {
     // Restore original PATH
     process.env.PATH = originalPath;
 
-    expect(capturedEnv?.PATH).toContain("/usr/bin");
-    expect(capturedEnv?.PATH).toContain("/usr/local/bin");
+    const spawned = processRunner.$.spawned(0);
+    expect(spawned.$.env?.PATH).toContain("/usr/bin");
+    expect(spawned.$.env?.PATH).toContain("/usr/local/bin");
   });
 
   it("sets EDITOR with absolute path", async () => {
-    let capturedEnv: NodeJS.ProcessEnv | undefined;
-    const mockProc = createMockSpawnedProcess({ pid: 12345 });
-    const processRunner = {
-      run: vi.fn((_cmd: string, _args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
-        capturedEnv = options?.env;
-        return mockProc;
-      }),
-    };
+    const processRunner = createMockProcessRunner({
+      onSpawn: () => ({ pid: 12345 }),
+    });
 
-    const httpClient = createMockHttpClient({ response: new Response("", { status: 200 }) });
-    const portManager = createMockPortManager({ findFreePort: { port: 8080 } });
+    const httpClient = createMockHttpClient({ defaultResponse: { status: 200 } });
+    const portManager = createPortManagerMock([8080]);
     const config = {
       binaryPath: "/usr/bin/code-server",
       runtimeDir: "/tmp/runtime",
       extensionsDir: "/tmp/extensions",
       userDataDir: "/tmp/user-data",
       binDir: "/app/bin",
+      codeServerDir: "/app/code-server-dir",
+      opencodeDir: "/app/opencode-dir",
     };
 
     const manager = new CodeServerManager(
@@ -841,27 +844,25 @@ describe("CodeServerManager (PATH and EDITOR)", () => {
     const expectedCodePath = isWindows
       ? path.join("/app/bin", "code.cmd")
       : path.join("/app/bin", "code");
-    expect(capturedEnv?.EDITOR).toContain(expectedCodePath);
+    const spawned = processRunner.$.spawned(0);
+    expect(spawned.$.env?.EDITOR).toContain(expectedCodePath);
   });
 
   it("EDITOR includes --wait flag", async () => {
-    let capturedEnv: NodeJS.ProcessEnv | undefined;
-    const mockProc = createMockSpawnedProcess({ pid: 12345 });
-    const processRunner = {
-      run: vi.fn((_cmd: string, _args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
-        capturedEnv = options?.env;
-        return mockProc;
-      }),
-    };
+    const processRunner = createMockProcessRunner({
+      onSpawn: () => ({ pid: 12345 }),
+    });
 
-    const httpClient = createMockHttpClient({ response: new Response("", { status: 200 }) });
-    const portManager = createMockPortManager({ findFreePort: { port: 8080 } });
+    const httpClient = createMockHttpClient({ defaultResponse: { status: 200 } });
+    const portManager = createPortManagerMock([8080]);
     const config = {
       binaryPath: "/usr/bin/code-server",
       runtimeDir: "/tmp/runtime",
       extensionsDir: "/tmp/extensions",
       userDataDir: "/tmp/user-data",
       binDir: "/app/bin",
+      codeServerDir: "/app/code-server-dir",
+      opencodeDir: "/app/opencode-dir",
     };
 
     const manager = new CodeServerManager(
@@ -873,27 +874,25 @@ describe("CodeServerManager (PATH and EDITOR)", () => {
     );
     await manager.ensureRunning();
 
-    expect(capturedEnv?.EDITOR).toContain("--wait");
+    const spawned = processRunner.$.spawned(0);
+    expect(spawned.$.env?.EDITOR).toContain("--wait");
   });
 
   it("EDITOR includes --reuse-window flag", async () => {
-    let capturedEnv: NodeJS.ProcessEnv | undefined;
-    const mockProc = createMockSpawnedProcess({ pid: 12345 });
-    const processRunner = {
-      run: vi.fn((_cmd: string, _args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
-        capturedEnv = options?.env;
-        return mockProc;
-      }),
-    };
+    const processRunner = createMockProcessRunner({
+      onSpawn: () => ({ pid: 12345 }),
+    });
 
-    const httpClient = createMockHttpClient({ response: new Response("", { status: 200 }) });
-    const portManager = createMockPortManager({ findFreePort: { port: 8080 } });
+    const httpClient = createMockHttpClient({ defaultResponse: { status: 200 } });
+    const portManager = createPortManagerMock([8080]);
     const config = {
       binaryPath: "/usr/bin/code-server",
       runtimeDir: "/tmp/runtime",
       extensionsDir: "/tmp/extensions",
       userDataDir: "/tmp/user-data",
       binDir: "/app/bin",
+      codeServerDir: "/app/code-server-dir",
+      opencodeDir: "/app/opencode-dir",
     };
 
     const manager = new CodeServerManager(
@@ -905,27 +904,25 @@ describe("CodeServerManager (PATH and EDITOR)", () => {
     );
     await manager.ensureRunning();
 
-    expect(capturedEnv?.EDITOR).toContain("--reuse-window");
+    const spawned = processRunner.$.spawned(0);
+    expect(spawned.$.env?.EDITOR).toContain("--reuse-window");
   });
 
   it("sets GIT_SEQUENCE_EDITOR same as EDITOR", async () => {
-    let capturedEnv: NodeJS.ProcessEnv | undefined;
-    const mockProc = createMockSpawnedProcess({ pid: 12345 });
-    const processRunner = {
-      run: vi.fn((_cmd: string, _args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
-        capturedEnv = options?.env;
-        return mockProc;
-      }),
-    };
+    const processRunner = createMockProcessRunner({
+      onSpawn: () => ({ pid: 12345 }),
+    });
 
-    const httpClient = createMockHttpClient({ response: new Response("", { status: 200 }) });
-    const portManager = createMockPortManager({ findFreePort: { port: 8080 } });
+    const httpClient = createMockHttpClient({ defaultResponse: { status: 200 } });
+    const portManager = createPortManagerMock([8080]);
     const config = {
       binaryPath: "/usr/bin/code-server",
       runtimeDir: "/tmp/runtime",
       extensionsDir: "/tmp/extensions",
       userDataDir: "/tmp/user-data",
       binDir: "/app/bin",
+      codeServerDir: "/app/code-server-dir",
+      opencodeDir: "/app/opencode-dir",
     };
 
     const manager = new CodeServerManager(
@@ -937,6 +934,39 @@ describe("CodeServerManager (PATH and EDITOR)", () => {
     );
     await manager.ensureRunning();
 
-    expect(capturedEnv?.GIT_SEQUENCE_EDITOR).toBe(capturedEnv?.EDITOR);
+    const spawned = processRunner.$.spawned(0);
+    expect(spawned.$.env?.GIT_SEQUENCE_EDITOR).toBe(spawned.$.env?.EDITOR);
+  });
+
+  it("sets VSCODE_PROXY_URI to empty string to disable localhost URL rewriting", async () => {
+    const processRunner = createMockProcessRunner({
+      onSpawn: () => ({ pid: 12345 }),
+    });
+
+    const httpClient = createMockHttpClient({ defaultResponse: { status: 200 } });
+    const portManager = createPortManagerMock([8080]);
+    const config = {
+      binaryPath: "/usr/bin/code-server",
+      runtimeDir: "/tmp/runtime",
+      extensionsDir: "/tmp/extensions",
+      userDataDir: "/tmp/user-data",
+      binDir: "/app/bin",
+      codeServerDir: "/app/code-server-dir",
+      opencodeDir: "/app/opencode-dir",
+    };
+
+    const manager = new CodeServerManager(
+      config,
+      processRunner,
+      httpClient,
+      portManager,
+      testLogger
+    );
+    await manager.ensureRunning();
+
+    // VSCODE_PROXY_URI should be empty to disable code-server's localhost URL rewriting.
+    // Without this, code-server rewrites localhost URLs to go through /proxy/<port>/
+    const spawned = processRunner.$.spawned(0);
+    expect(spawned.$.env?.VSCODE_PROXY_URI).toBe("");
   });
 });

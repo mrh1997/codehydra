@@ -1,0 +1,16 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "target": "ES2020",
+    "lib": ["ES2020"],
+    "declaration": false,
+    "noEmit": true,
+    "verbatimModuleSyntax": false,
+    "exactOptionalPropertyTypes": false,
+    "types": ["node", "vscode"]
+  },
+  "include": ["dictation/src/**/*", "sidekick/src/**/*"],
+  "exclude": ["*/node_modules", "*/dist"]
+}

@@ -282,14 +282,48 @@ export class ViewManager implements IViewManager {
     // Get or create session for this partition
     const sessionHandle = this.sessionLayer.fromPartition(partitionName);
 
-    // Configure permission handler for this session
+    // Configure permission handlers for this session
+    // Both handlers are needed: request handler for async permission requests,
+    // check handler for synchronous permission checks (e.g., document.execCommand('copy'))
+    //
+    // Allowed permissions:
+    // - clipboard-*: Copy/paste operations in terminal and editor
+    // - media: Microphone access for dictation extension
+    // - fullscreen: VS Code fullscreen mode
+    // - notifications: Build completion, agent status notifications
+    // - openExternal: Opening URLs from terminal/code
+    // - fileSystem: Modern file handling (drag/drop, file pickers)
+    // - hid: Stream decks, macro pads, custom input devices
+    // - serial: Arduino, microcontroller development, serial monitors
+    // - usb: Firmware flashing, Android ADB, hardware debugging
     this.sessionLayer.setPermissionRequestHandler(sessionHandle, (permission) => {
-      // Allow clipboard and microphone access, deny everything else
-      // Note: "media" permission covers both microphone and camera via getUserMedia()
       return (
         permission === "clipboard-read" ||
         permission === "clipboard-sanitized-write" ||
-        permission === "media"
+        permission === "clipboard-write" ||
+        permission === "media" ||
+        permission === "fullscreen" ||
+        permission === "notifications" ||
+        permission === "openExternal" ||
+        permission === "fileSystem" ||
+        permission === "hid" ||
+        permission === "serial" ||
+        permission === "usb"
+      );
+    });
+    this.sessionLayer.setPermissionCheckHandler(sessionHandle, (permission) => {
+      return (
+        permission === "clipboard-read" ||
+        permission === "clipboard-sanitized-write" ||
+        permission === "clipboard-write" ||
+        permission === "media" ||
+        permission === "fullscreen" ||
+        permission === "notifications" ||
+        permission === "openExternal" ||
+        permission === "fileSystem" ||
+        permission === "hid" ||
+        permission === "serial" ||
+        permission === "usb"
       );
     });
 
@@ -320,7 +354,7 @@ export class ViewManager implements IViewManager {
 
     // Configure navigation handler to prevent navigation away from code-server
     this.viewLayer.onWillNavigate(viewHandle, (navigationUrl) => {
-      const codeServerOrigin = `http://localhost:${this.codeServerPort}`;
+      const codeServerOrigin = `http://127.0.0.1:${this.codeServerPort}`;
       if (!navigationUrl.startsWith(codeServerOrigin)) {
         openExternal(navigationUrl).catch((error: unknown) => {
           this.logger.warn("Failed to open external URL", {

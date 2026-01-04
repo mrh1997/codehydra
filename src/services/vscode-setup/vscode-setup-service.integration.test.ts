@@ -15,13 +15,8 @@ import { VscodeSetupService } from "./vscode-setup-service";
 import { DefaultFileSystemLayer } from "../platform/filesystem";
 import { SILENT_LOGGER } from "../logging";
 import { createMockPlatformInfo } from "../platform/platform-info.test-utils";
-import {
-  type SetupMarker,
-  type ProcessRunner,
-  type ProcessResult,
-  type PreflightResult,
-} from "./types";
-import type { SpawnedProcess } from "../platform/process";
+import { createMockProcessRunner, type MockProcessRunner } from "../platform/process.state-mock";
+import { type SetupMarker, type PreflightResult } from "./types";
 import type { PathProvider } from "../platform/path-provider";
 import { createMockPathProvider } from "../platform/path-provider.test-utils";
 import {
@@ -83,32 +78,28 @@ describe("VscodeSetupService Integration", () => {
     // Create mock vsix files (just needs to exist for the test)
     await writeFile(join(assetsDir, "codehydra-sidekick-0.0.3.vsix"), "mock-vsix-content");
     await writeFile(join(assetsDir, "sst-dev-opencode-0.0.13.vsix"), "mock-opencode-vsix-content");
-  }
 
-  /**
-   * Creates a mock SpawnedProcess with controllable wait() result.
-   */
-  function createMockSpawnedProcess(result: ProcessResult): SpawnedProcess {
-    return {
-      pid: 12345,
-      kill: vi.fn().mockReturnValue(true),
-      wait: vi.fn().mockResolvedValue(result),
-    };
+    // Create bin assets directory with wrapper scripts
+    const binAssetsDir = join(assetsDir, "bin");
+    await mkdir(binAssetsDir, { recursive: true });
+    await writeFile(join(binAssetsDir, "code"), "#!/bin/sh\nexec code-server");
+    await writeFile(join(binAssetsDir, "code.cmd"), "@echo off\ncall code-server");
+    await writeFile(join(binAssetsDir, "opencode"), "#!/bin/sh\nexec opencode.cjs");
+    await writeFile(join(binAssetsDir, "opencode.cmd"), "@echo off\ncall opencode.cjs");
+    await writeFile(join(binAssetsDir, "opencode.cjs"), "// opencode wrapper");
   }
 
   /**
    * Creates a mock ProcessRunner that simulates code-server.
    */
-  function createMockProcessRunner(exitCode = 0, stderr = ""): ProcessRunner {
-    return {
-      run(): SpawnedProcess {
-        return createMockSpawnedProcess({
-          stdout: exitCode === 0 ? "Extension 'sst-dev.opencode' was successfully installed." : "",
-          stderr,
-          exitCode,
-        });
+  function createTestProcessRunner(exitCode = 0, stderr = ""): MockProcessRunner {
+    return createMockProcessRunner({
+      defaultResult: {
+        stdout: exitCode === 0 ? "Extension 'sst-dev.opencode' was successfully installed." : "",
+        stderr,
+        exitCode,
       },
-    };
+    });
   }
 
   /**
@@ -151,6 +142,7 @@ describe("VscodeSetupService Integration", () => {
       setupMarkerPath: mockPaths.markerPath,
       vscodeAssetsDir: mockPaths.assetsDir,
       binDir: mockPaths.binDir,
+      binAssetsDir: join(mockPaths.assetsDir, "bin"),
       mcpConfigPath: join(tempDir, "opencode", "codehydra-mcp.json"),
     });
   });
@@ -162,7 +154,7 @@ describe("VscodeSetupService Integration", () => {
 
   describe("Full setup flow", () => {
     it("creates all required files in correct locations", async () => {
-      const processRunner = createMockProcessRunner();
+      const processRunner = createTestProcessRunner();
       const service = new VscodeSetupService(processRunner, testPathProvider, fsLayer);
       const preflight = createFullSetupPreflightResult();
 
@@ -183,7 +175,7 @@ describe("VscodeSetupService Integration", () => {
     });
 
     it("emits progress callbacks in correct order", async () => {
-      const processRunner = createMockProcessRunner();
+      const processRunner = createTestProcessRunner();
       const service = new VscodeSetupService(processRunner, testPathProvider, fsLayer);
       const preflight = createFullSetupPreflightResult();
 
@@ -211,7 +203,7 @@ describe("VscodeSetupService Integration", () => {
     });
 
     it("completes within reasonable time", async () => {
-      const processRunner = createMockProcessRunner();
+      const processRunner = createTestProcessRunner();
       const service = new VscodeSetupService(processRunner, testPathProvider, fsLayer);
       const preflight = createFullSetupPreflightResult();
 
@@ -226,7 +218,7 @@ describe("VscodeSetupService Integration", () => {
 
   describe("Partial failure cleanup", () => {
     it("does not write marker when extension install fails", async () => {
-      const processRunner = createMockProcessRunner(1, "Failed to install extension");
+      const processRunner = createTestProcessRunner(1, "Failed to install extension");
       const service = new VscodeSetupService(processRunner, testPathProvider, fsLayer);
       const preflight = createFullSetupPreflightResult();
 
@@ -239,7 +231,7 @@ describe("VscodeSetupService Integration", () => {
     });
 
     it("bundled vsix is copied before extension install is attempted", async () => {
-      const processRunner = createMockProcessRunner(1, "Failed");
+      const processRunner = createTestProcessRunner(1, "Failed");
       const service = new VscodeSetupService(processRunner, testPathProvider, fsLayer);
       const preflight = createFullSetupPreflightResult();
 
@@ -262,7 +254,7 @@ describe("VscodeSetupService Integration", () => {
       };
       await writeFile(mockPaths.markerPath, JSON.stringify(legacyMarker), "utf-8");
 
-      const processRunner = createMockProcessRunner();
+      const processRunner = createTestProcessRunner();
       const service = new VscodeSetupService(processRunner, testPathProvider, fsLayer);
 
       const isComplete = await service.isSetupComplete();
@@ -278,7 +270,7 @@ describe("VscodeSetupService Integration", () => {
       };
       await writeFile(mockPaths.markerPath, JSON.stringify(marker), "utf-8");
 
-      const processRunner = createMockProcessRunner();
+      const processRunner = createTestProcessRunner();
       const service = new VscodeSetupService(processRunner, testPathProvider, fsLayer);
 
       const isComplete = await service.isSetupComplete();
@@ -299,7 +291,7 @@ describe("VscodeSetupService Integration", () => {
       await writeFile(join(mockPaths.userDataDir, "User", "settings.json"), "{}", "utf-8");
       await writeFile(mockPaths.markerPath, "{}", "utf-8");
 
-      const processRunner = createMockProcessRunner();
+      const processRunner = createTestProcessRunner();
       const service = new VscodeSetupService(processRunner, testPathProvider, fsLayer);
 
       await service.cleanVscodeDir();
@@ -374,10 +366,11 @@ describe("VscodeSetupService Integration", () => {
         setupMarkerPath: mockPaths.markerPath,
         vscodeAssetsDir: mockPaths.assetsDir,
         binDir,
+        binAssetsDir: join(mockPaths.assetsDir, "bin"),
         mcpConfigPath: join(tempDir, "opencode", "codehydra-mcp.json"),
       });
 
-      const processRunner = createMockProcessRunner();
+      const processRunner = createTestProcessRunner();
       const service = new VscodeSetupService(
         processRunner,
         testPathProvider,
@@ -390,8 +383,7 @@ describe("VscodeSetupService Integration", () => {
 
       expect(result.success).toBe(true);
 
-      // Verify bin directory was created with scripts
-      // Note: code-server wrapper is not generated - we launch code-server directly
+      // Verify bin directory was created with scripts copied from assets
       const entries = await import("node:fs/promises").then((fs) => fs.readdir(binDir));
       expect(entries).toContain("code");
     });
@@ -406,10 +398,11 @@ describe("VscodeSetupService Integration", () => {
         setupMarkerPath: mockPaths.markerPath,
         vscodeAssetsDir: mockPaths.assetsDir,
         binDir,
+        binAssetsDir: join(mockPaths.assetsDir, "bin"),
         mcpConfigPath: join(tempDir, "opencode", "codehydra-mcp.json"),
       });
 
-      const processRunner = createMockProcessRunner();
+      const processRunner = createTestProcessRunner();
       const service = new VscodeSetupService(
         processRunner,
         testPathProvider,
@@ -450,7 +443,7 @@ describe("VscodeSetupService Integration", () => {
       // Only create the first vsix
       await writeFile(join(mockPaths.assetsDir, "codehydra-sidekick-0.0.3.vsix"), "mock-vsix");
 
-      const processRunner = createMockProcessRunner();
+      const processRunner = createTestProcessRunner();
       const service = new VscodeSetupService(processRunner, testPathProvider, fsLayer);
       // Preflight with both extensions missing
       const preflight: PreflightResult = {
@@ -472,7 +465,7 @@ describe("VscodeSetupService Integration", () => {
     });
 
     it("fails with error when extension installation fails", async () => {
-      const processRunner = createMockProcessRunner(1, "Extension installation failed");
+      const processRunner = createTestProcessRunner(1, "Extension installation failed");
       const service = new VscodeSetupService(processRunner, testPathProvider, fsLayer);
       const preflight = createFullSetupPreflightResult();
 
@@ -487,7 +480,7 @@ describe("VscodeSetupService Integration", () => {
 
   /**
    * Real code-server tests - skipped by default.
-   * Run manually with: npm test -- --run vscode-setup-service.integration --no-skip
+   * Run manually with: pnpm test -- --run vscode-setup-service.integration --no-skip
    */
   describe.skip("Real code-server tests (manual only)", () => {
     it("extension install with real code-server", async () => {

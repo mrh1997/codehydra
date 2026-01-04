@@ -24,6 +24,12 @@ import { SILENT_LOGGER, logAtLevel } from "../logging";
 import type { LogLevel } from "../logging/types";
 import { resolveWorkspace, type WorkspaceLookup } from "./workspace-resolver";
 import { getErrorMessage } from "../errors";
+import {
+  initialPromptSchema,
+  normalizeInitialPrompt,
+  type PromptModel,
+} from "../../shared/api/types";
+import { createOpencodeClient } from "@opencode-ai/sdk";
 
 /**
  * X-Workspace-Path header name.
@@ -328,16 +334,17 @@ export class McpServer implements IMcpServer {
       )
     );
 
-    // workspace_get_opencode_port
+    // workspace_get_opencode_session
     this.registeredTools.push(
       this.mcpServer.registerTool(
-        "workspace_get_opencode_port",
+        "workspace_get_opencode_session",
         {
-          description: "Get the OpenCode server port for the current workspace",
+          description:
+            "Get the OpenCode session info (port and session ID) for the current workspace",
           inputSchema: z.object({}),
         },
         this.createWorkspaceHandler(async (resolved) =>
-          this.api.workspaces.getOpencodePort(resolved.projectId, resolved.workspaceName)
+          this.api.workspaces.getOpenCodeSession(resolved.projectId, resolved.workspaceName)
         )
       )
     );
@@ -354,6 +361,83 @@ export class McpServer implements IMcpServer {
         this.createWorkspaceHandler(async (resolved) =>
           this.api.workspaces.restartOpencodeServer(resolved.projectId, resolved.workspaceName)
         )
+      )
+    );
+
+    // workspace_create
+    this.registeredTools.push(
+      this.mcpServer.registerTool(
+        "workspace_create",
+        {
+          description:
+            "Create a new workspace in the same project as the caller. Returns the created workspace.",
+          inputSchema: z.object({
+            name: z.string().min(1).describe("Name for the new workspace (becomes branch name)"),
+            base: z.string().min(1).describe("Base branch to create the workspace from"),
+            initialPrompt: initialPromptSchema
+              .optional()
+              .describe(
+                "Optional initial prompt to send after workspace is created. Can be a string or { prompt, agent? }"
+              ),
+            keepInBackground: z
+              .boolean()
+              .optional()
+              .describe(
+                "If true, don't switch to the new workspace (default: true = stay in background for API calls)"
+              ),
+          }),
+        },
+        async (args, extra) => {
+          const context = await this.getToolContext(extra);
+          if (!context.resolved) {
+            return this.errorResult(
+              "workspace-not-found",
+              `Workspace not found: ${context.workspacePath}`
+            );
+          }
+
+          try {
+            const resolved = context.resolved;
+            const name = args.name as string;
+            const base = args.base as string;
+            const rawInitialPrompt = args.initialPrompt as
+              | string
+              | { prompt: string; agent?: string; model?: PromptModel }
+              | undefined;
+            // Default to true for API calls (keep in background)
+            const keepInBackground = (args.keepInBackground as boolean | undefined) ?? true;
+
+            // If initialPrompt provided, resolve model from caller's session if not specified
+            let finalPrompt: { prompt: string; agent?: string; model?: PromptModel } | undefined;
+            if (rawInitialPrompt !== undefined) {
+              const normalized = normalizeInitialPrompt(rawInitialPrompt);
+
+              // If no model specified, try to get caller's current model
+              let model = normalized.model;
+              if (!model) {
+                model = await this.getCallerModel(resolved);
+              }
+
+              // Build final prompt with model if available
+              finalPrompt = { prompt: normalized.prompt };
+              if (normalized.agent !== undefined) {
+                finalPrompt = { ...finalPrompt, agent: normalized.agent };
+              }
+              if (model !== undefined) {
+                finalPrompt = { ...finalPrompt, model };
+              }
+            }
+
+            // Create workspace with options
+            const result = await this.api.workspaces.create(resolved.projectId, name, base, {
+              ...(finalPrompt !== undefined && { initialPrompt: finalPrompt }),
+              ...(keepInBackground && { keepInBackground }),
+            });
+            return this.successResult(result);
+          } catch (error) {
+            return this.handleError(error);
+          }
+        }
       )
     );
 
@@ -383,14 +467,26 @@ export class McpServer implements IMcpServer {
         "workspace_execute_command",
         {
           description:
-            "Execute a VS Code command in the current workspace. Most commands return undefined.",
+            "Execute a VS Code command in the current workspace. Most commands return undefined. " +
+            "Commands requiring VS Code objects (Uri, Position, Range, Selection, Location) can use " +
+            'the $vscode wrapper format. Example: { "$vscode": "Uri", "value": "file:///path/to/file.ts" }',
           inputSchema: z.object({
             command: z
               .string()
               .min(1)
               .max(256)
               .describe("VS Code command identifier (e.g., 'workbench.action.files.save')"),
-            args: z.array(z.unknown()).optional().describe("Optional command arguments"),
+            args: z
+              .array(z.unknown())
+              .optional()
+              .describe(
+                "Optional command arguments. Supports $vscode wrapper format for VS Code objects:\n" +
+                  '- Uri: { "$vscode": "Uri", "value": "file:///path/to/file.ts" }\n' +
+                  '- Position: { "$vscode": "Position", "line": 10, "character": 5 }\n' +
+                  '- Range: { "$vscode": "Range", "start": <Position>, "end": <Position> }\n' +
+                  '- Selection: { "$vscode": "Selection", "anchor": <Position>, "active": <Position> }\n' +
+                  '- Location: { "$vscode": "Location", "uri": <Uri>, "range": <Range> }'
+              ),
           }),
         },
         this.createWorkspaceHandler(
@@ -467,6 +563,84 @@ export class McpServer implements IMcpServer {
       workspacePath,
       resolved,
     };
+  }
+
+  /**
+   * Get the model from the caller's current OpenCode session.
+   * Used to propagate the model when creating a new workspace with an initial prompt.
+   *
+   * @param resolved - The resolved workspace info for the caller
+   * @returns The model from the most recent user message, or undefined if not available
+   */
+  private async getCallerModel(resolved: McpResolvedWorkspace): Promise<PromptModel | undefined> {
+    try {
+      // Get caller's OpenCode session
+      const session = await this.api.workspaces.getOpenCodeSession(
+        resolved.projectId,
+        resolved.workspaceName
+      );
+
+      if (!session) {
+        this.logger.debug("Cannot determine model: no OpenCode session running", {
+          projectId: resolved.projectId,
+          workspaceName: resolved.workspaceName,
+        });
+        return undefined;
+      }
+
+      // Query caller's OpenCode for current session's model
+      const sdk = createOpencodeClient({ baseUrl: `http://127.0.0.1:${session.port}` });
+      const sessions = await sdk.session.list();
+      const activeSession = sessions.data?.[0];
+
+      if (!activeSession) {
+        this.logger.debug("Cannot determine model: no active session in caller workspace", {
+          projectId: resolved.projectId,
+          workspaceName: resolved.workspaceName,
+        });
+        return undefined;
+      }
+
+      const messages = await sdk.session.messages({ path: { id: activeSession.id } });
+      const lastUserMessage = messages.data?.findLast((m) => m.info.role === "user");
+
+      // SDK types don't include model field, but OpenCode returns it
+      type UserMessageInfo = {
+        role: string;
+        model?: { providerID: string; modelID: string };
+      };
+      const userInfo = lastUserMessage?.info as UserMessageInfo | undefined;
+
+      if (!userInfo?.model) {
+        this.logger.debug("Cannot determine model: no user messages with model in caller session", {
+          projectId: resolved.projectId,
+          workspaceName: resolved.workspaceName,
+          sessionId: activeSession.id,
+        });
+        return undefined;
+      }
+
+      // Extract model from the message info
+      const model: PromptModel = {
+        providerID: userInfo.model.providerID,
+        modelID: userInfo.model.modelID,
+      };
+
+      this.logger.debug("Retrieved caller model", {
+        projectId: resolved.projectId,
+        workspaceName: resolved.workspaceName,
+        model: `${model.providerID}/${model.modelID}`,
+      });
+
+      return model;
+    } catch (error) {
+      this.logger.warn("Failed to get caller model", {
+        projectId: resolved.projectId,
+        workspaceName: resolved.workspaceName,
+        error: getErrorMessage(error),
+      });
+      return undefined;
+    }
   }
 
   /**

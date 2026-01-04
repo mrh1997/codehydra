@@ -20,7 +20,8 @@ import { join } from "node:path";
 import { CodeServerManager } from "./code-server-manager";
 import { ExecaProcessRunner } from "../platform/process";
 import { DefaultNetworkLayer } from "../platform/network";
-import { createTempDir, delay } from "../test-utils";
+import { createTempDir } from "../test-utils";
+import { delay } from "@shared/test-fixtures";
 import { CODE_SERVER_VERSION } from "../binary-download/versions";
 import type { CodeServerConfig } from "./types";
 
@@ -72,6 +73,8 @@ function createTestConfig(baseDir: string): CodeServerConfig {
     extensionsDir: `${baseDir}/extensions`,
     userDataDir: `${baseDir}/user-data`,
     binDir: `${baseDir}/bin`,
+    codeServerDir: `${baseDir}/code-server`,
+    opencodeDir: `${baseDir}/opencode`,
   };
 }
 
@@ -248,7 +251,7 @@ describe("CodeServerManager (boundary)", () => {
         const port = await manager.ensureRunning();
 
         // Act - bypass CodeServerManager, hit endpoint directly
-        const response = await fetch(`http://localhost:${port}/healthz`);
+        const response = await fetch(`http://127.0.0.1:${port}/healthz`);
 
         // Assert
         expect(response.status).toBe(200);

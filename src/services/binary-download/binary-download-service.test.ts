@@ -2,23 +2,26 @@
  * Unit tests for BinaryDownloadService.
  */
 
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DefaultBinaryDownloadService } from "./binary-download-service";
 import { BinaryDownloadError } from "./errors";
 import { CODE_SERVER_VERSION, OPENCODE_VERSION } from "./versions";
-import { createMockHttpClient } from "../platform/network.test-utils";
-import { createMockFileSystemLayer, createDirEntry } from "../platform/filesystem.test-utils";
-import { createMockArchiveExtractor } from "./archive-extractor.test-utils";
+import { createMockHttpClient } from "../platform/http-client.state-mock";
+import {
+  createFileSystemMock,
+  createSpyFileSystemLayer,
+  directory,
+  createDirEntry,
+} from "../platform/filesystem.state-mock";
+import { createArchiveExtractorMock } from "./archive-extractor.state-mock";
 import { createMockPathProvider } from "../platform/path-provider.test-utils";
 import { createMockPlatformInfo } from "../platform/platform-info.test-utils";
-import { FileSystemError } from "../errors";
-import type { PathLike } from "../platform/filesystem";
 
 describe("DefaultBinaryDownloadService", () => {
   const mockHttpClient = createMockHttpClient();
-  const mockFs = createMockFileSystemLayer();
-  const mockArchiveExtractor = createMockArchiveExtractor();
+  const mockFs = createFileSystemMock();
   const mockPathProvider = createMockPathProvider({
     dataRootDir: "/app-data",
     binDir: "/app-data/bin",
@@ -28,10 +31,11 @@ describe("DefaultBinaryDownloadService", () => {
     arch: "x64",
   });
 
+  let mockArchiveExtractor: ReturnType<typeof createArchiveExtractorMock>;
   let service: DefaultBinaryDownloadService;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    mockArchiveExtractor = createArchiveExtractorMock();
     service = new DefaultBinaryDownloadService(
       mockHttpClient,
       mockFs,
@@ -93,10 +97,11 @@ describe("DefaultBinaryDownloadService", () => {
 
   describe("isInstalled", () => {
     it("returns true when binary directory exists", async () => {
-      // Create service with fs that returns directory entries
-      const fsWithDir = createMockFileSystemLayer({
-        readdir: {
-          entries: [createDirEntry("bin", { isDirectory: true })],
+      // Create service with fs that has the version directory with a child
+      const fsWithDir = createFileSystemMock({
+        entries: {
+          [`/app-data/code-server/${CODE_SERVER_VERSION}`]: directory(),
+          [`/app-data/code-server/${CODE_SERVER_VERSION}/bin`]: directory(),
         },
       });
       const serviceWithFs = new DefaultBinaryDownloadService(
@@ -113,12 +118,8 @@ describe("DefaultBinaryDownloadService", () => {
     });
 
     it("returns false when binary directory does not exist", async () => {
-      // Create service with fs that throws ENOENT
-      const fsWithNoDir = createMockFileSystemLayer({
-        readdir: {
-          error: new FileSystemError("ENOENT", "/app-data/code-server", "Directory not found"),
-        },
-      });
+      // Create service with empty fs - ENOENT happens naturally
+      const fsWithNoDir = createFileSystemMock();
       const serviceWithNoFs = new DefaultBinaryDownloadService(
         mockHttpClient,
         fsWithNoDir,
@@ -136,7 +137,7 @@ describe("DefaultBinaryDownloadService", () => {
   describe("download", () => {
     it("throws BinaryDownloadError on HTTP 404", async () => {
       const httpClient = createMockHttpClient({
-        response: new Response(null, { status: 404 }),
+        defaultResponse: { status: 404 },
       });
       const serviceWith404 = new DefaultBinaryDownloadService(
         httpClient,
@@ -155,7 +156,7 @@ describe("DefaultBinaryDownloadService", () => {
 
     it("throws BinaryDownloadError on network error", async () => {
       const httpClient = createMockHttpClient({
-        error: new TypeError("Failed to fetch"),
+        defaultResponse: { error: new TypeError("Failed to fetch") },
       });
       const serviceWithError = new DefaultBinaryDownloadService(
         httpClient,
@@ -210,54 +211,41 @@ describe("DefaultBinaryDownloadService", () => {
     });
 
     it("flattens nested directory structure using rename", async () => {
-      // Track rename and rm calls to verify correct flattening behavior
-      const renameCalls: Array<{ oldPath: string; newPath: string }> = [];
-      const rmCalls: Array<{ path: string; options: unknown }> = [];
-      let readdirCallCount = 0;
-
-      // Create streaming response body
-      const body = new ReadableStream({
-        start(controller) {
-          controller.enqueue(new TextEncoder().encode("binary content"));
-          controller.close();
-        },
-      });
-
       const successHttpClient = createMockHttpClient({
-        response: new Response(body, {
+        defaultResponse: {
+          body: "binary content",
           status: 200,
           headers: { "content-length": "14" },
-        }),
+        },
       });
 
-      const trackingFs = createMockFileSystemLayer({
-        readdir: {
-          implementation: async () => {
-            readdirCallCount++;
-            if (readdirCallCount === 1) {
-              // First call: destDir has single nested directory
-              return [createDirEntry("code-server-4.106.3-linux-amd64", { isDirectory: true })];
-            } else {
-              // Second call: nested directory contents
-              return [
-                createDirEntry("bin", { isDirectory: true }),
-                createDirEntry("lib", { isDirectory: true }),
-                createDirEntry("package.json", { isFile: true }),
-              ];
-            }
-          },
-        },
-        rename: {
-          implementation: async (oldPath: PathLike, newPath: PathLike) => {
-            renameCalls.push({ oldPath: String(oldPath), newPath: String(newPath) });
-          },
-        },
-        rm: {
-          implementation: async (path: PathLike, options: unknown) => {
-            rmCalls.push({ path: String(path), options });
-          },
+      // Use spy filesystem to track calls - include temp directory for temp file writes
+      const trackingFs = createSpyFileSystemLayer({
+        entries: {
+          [tmpdir()]: directory(),
         },
       });
+
+      // Override readdir to return dynamic results based on call count
+      let readdirCallCount = 0;
+      trackingFs.readdir = vi.fn(async () => {
+        readdirCallCount++;
+        if (readdirCallCount === 1) {
+          // First call: destDir has single nested directory
+          return [createDirEntry("code-server-4.106.3-linux-amd64", { isDirectory: true })];
+        } else {
+          // Second call: nested directory contents
+          return [
+            createDirEntry("bin", { isDirectory: true }),
+            createDirEntry("lib", { isDirectory: true }),
+            createDirEntry("package.json", { isFile: true }),
+          ];
+        }
+      });
+
+      // Override rename and rm to be no-ops (we just want to track calls)
+      trackingFs.rename = vi.fn(async () => {});
+      trackingFs.rm = vi.fn(async () => {});
 
       const trackingService = new DefaultBinaryDownloadService(
         successHttpClient,
@@ -270,129 +258,29 @@ describe("DefaultBinaryDownloadService", () => {
       await trackingService.download("code-server");
 
       // Verify rename was called for each nested entry (atomic moves)
-      expect(renameCalls).toHaveLength(3);
-      expect(renameCalls[0]).toEqual({
-        oldPath: join(
+      expect(trackingFs.rename).toHaveBeenCalledTimes(3);
+      // Note: Service passes Path objects, so we check string representation
+      const renameCalls = trackingFs.rename.mock.calls;
+      expect(String(renameCalls[0]?.[0])).toBe(
+        join(
           "/app-data",
           "code-server",
           CODE_SERVER_VERSION,
           "code-server-4.106.3-linux-amd64",
           "bin"
-        ),
-        newPath: join("/app-data", "code-server", CODE_SERVER_VERSION, "bin"),
-      });
+        )
+      );
+      expect(String(renameCalls[0]?.[1])).toBe(
+        join("/app-data", "code-server", CODE_SERVER_VERSION, "bin")
+      );
 
       // Verify the now-empty nested directory was removed
-      const nestedDirRmCall = rmCalls.find((c) =>
-        c.path.includes("code-server-4.106.3-linux-amd64")
+      const rmCalls = trackingFs.rm.mock.calls;
+      const nestedDirRmCall = rmCalls.find((call) =>
+        String(call[0]).includes("code-server-4.106.3-linux-amd64")
       );
       expect(nestedDirRmCall).toBeDefined();
-      expect(nestedDirRmCall?.options).toEqual({ recursive: true, force: true });
-    });
-  });
-
-  describe("createWrapperScripts", () => {
-    it("creates wrapper scripts in binDir", async () => {
-      // Track calls with custom implementation
-      const mkdirCalls: Array<{ path: string; options: unknown }> = [];
-      const writeFileCalls: Array<{ path: string; content: string }> = [];
-
-      const trackingFs = createMockFileSystemLayer({
-        mkdir: {
-          implementation: async (path: PathLike, options: unknown) => {
-            mkdirCalls.push({ path: String(path), options });
-          },
-        },
-        writeFile: {
-          implementation: async (path: PathLike, content: string) => {
-            writeFileCalls.push({ path: String(path), content });
-          },
-        },
-      });
-
-      const trackingService = new DefaultBinaryDownloadService(
-        mockHttpClient,
-        trackingFs,
-        mockArchiveExtractor,
-        mockPathProvider,
-        mockPlatformInfo
-      );
-
-      await trackingService.createWrapperScripts();
-
-      expect(mkdirCalls).toHaveLength(1);
-      expect(mkdirCalls[0]?.path).toBe("/app-data/bin");
-      expect(mkdirCalls[0]?.options).toEqual({ recursive: true });
-      expect(writeFileCalls).toHaveLength(2);
-    });
-
-    it("creates Unix shell scripts on Linux", async () => {
-      const writeFileCalls: Array<{ path: string; content: string }> = [];
-
-      const trackingFs = createMockFileSystemLayer({
-        writeFile: {
-          implementation: async (path: PathLike, content: string) => {
-            writeFileCalls.push({ path: String(path), content });
-          },
-        },
-      });
-
-      const trackingService = new DefaultBinaryDownloadService(
-        mockHttpClient,
-        trackingFs,
-        mockArchiveExtractor,
-        mockPathProvider,
-        mockPlatformInfo
-      );
-
-      await trackingService.createWrapperScripts();
-
-      // Check code-server wrapper
-      const codeServerCall = writeFileCalls.find((c) => c.path.includes("code-server"));
-      expect(codeServerCall).toBeDefined();
-      expect(codeServerCall?.content).toContain("#!/bin/sh");
-      expect(codeServerCall?.content).toContain("exec");
-
-      // Check opencode wrapper
-      const opencodeCall = writeFileCalls.find((c) => c.path.includes("opencode"));
-      expect(opencodeCall).toBeDefined();
-      expect(opencodeCall?.content).toContain("#!/bin/sh");
-    });
-
-    it("creates batch scripts on Windows", async () => {
-      const writeFileCalls: Array<{ path: string; content: string }> = [];
-
-      const trackingFs = createMockFileSystemLayer({
-        writeFile: {
-          implementation: async (path: PathLike, content: string) => {
-            writeFileCalls.push({ path: String(path), content });
-          },
-        },
-      });
-
-      const winPlatformInfo = createMockPlatformInfo({
-        platform: "win32",
-        arch: "x64",
-      });
-      const winService = new DefaultBinaryDownloadService(
-        mockHttpClient,
-        trackingFs,
-        mockArchiveExtractor,
-        mockPathProvider,
-        winPlatformInfo
-      );
-
-      await winService.createWrapperScripts();
-
-      // Check code-server wrapper
-      const codeServerCall = writeFileCalls.find((c) => c.path.includes("code-server.cmd"));
-      expect(codeServerCall).toBeDefined();
-      expect(codeServerCall?.content).toContain("@echo off");
-
-      // Check opencode wrapper
-      const opencodeCall = writeFileCalls.find((c) => c.path.includes("opencode.cmd"));
-      expect(opencodeCall).toBeDefined();
-      expect(opencodeCall?.content).toContain("@echo off");
+      expect(nestedDirRmCall?.[1]).toEqual({ recursive: true, force: true });
     });
   });
 });

@@ -12,6 +12,7 @@ CodeHydra exposes APIs at two levels:
 - [Public API](#public-api) - Workspace-scoped API for external consumers
   - [VS Code Extension Access](#vs-code-extension-access)
   - [WebSocket Access](#websocket-access)
+- [VS Code Object Serialization](#vs-code-object-serialization) - Format for passing VS Code objects through JSON
 - [Private API](#private-api) - Full API for CodeHydra internals
 - [Type Definitions](#type-definitions) - Shared types
 
@@ -44,15 +45,16 @@ Both methods provide the same API contract - only the transport differs.
 
 All methods operate on the **connected workspace**.
 
-| Method                  | Signature                                                            | Description                                            |
-| ----------------------- | -------------------------------------------------------------------- | ------------------------------------------------------ |
-| `getStatus`             | `() => Promise<WorkspaceStatus>`                                     | Get workspace status (dirty flag, agent status)        |
-| `getOpencodePort`       | `() => Promise<number \| null>`                                      | Get OpenCode server port (null if not running)         |
-| `restartOpencodeServer` | `() => Promise<number>`                                              | Restart OpenCode server, preserving port, returns port |
-| `getMetadata`           | `() => Promise<Record<string, string>>`                              | Get all metadata (always includes `base` key)          |
-| `setMetadata`           | `(key: string, value: string \| null) => Promise<void>`              | Set or delete a metadata key                           |
-| `executeCommand`        | `(command: string, args?: unknown[]) => Promise<unknown>`            | Execute a VS Code command (10-second timeout)          |
-| `delete`                | `(options?: { keepBranch?: boolean }) => Promise<{ started: true }>` | Delete the workspace (terminates OpenCode, async)      |
+| Method                  | Signature                                                                              | Description                                                     |
+| ----------------------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `getStatus`             | `() => Promise<WorkspaceStatus>`                                                       | Get workspace status (dirty flag, agent status)                 |
+| `getOpenCodeSession`    | `() => Promise<OpenCodeSession \| null>`                                               | Get OpenCode session info (port + sessionId, null if not ready) |
+| `restartOpencodeServer` | `() => Promise<number>`                                                                | Restart OpenCode server, preserving port, returns port          |
+| `getMetadata`           | `() => Promise<Record<string, string>>`                                                | Get all metadata (always includes `base` key)                   |
+| `setMetadata`           | `(key: string, value: string \| null) => Promise<void>`                                | Set or delete a metadata key                                    |
+| `executeCommand`        | `(command: string, args?: unknown[]) => Promise<unknown>`                              | Execute a VS Code command (10-second timeout)                   |
+| `delete`                | `(options?: { keepBranch?: boolean }) => Promise<{ started: true }>`                   | Delete the workspace (terminates OpenCode, async)               |
+| `create`                | `(name: string, base: string, options?: WorkspaceCreateOptions) => Promise<Workspace>` | Create a new workspace in the same project                      |
 
 #### `log` Namespace
 
@@ -108,10 +110,11 @@ switch (status.agent.type) {
 #### Connect to OpenCode Server
 
 ```typescript
-const port = await api.workspace.getOpencodePort();
-if (port !== null) {
-  // Connect to OpenCode API at http://localhost:${port}
-  const response = await fetch(`http://localhost:${port}/api/sessions`);
+const session = await api.workspace.getOpenCodeSession();
+if (session !== null) {
+  // Connect to OpenCode API at http://localhost:${session.port}
+  // Primary session ID is available as session.sessionId
+  const response = await fetch(`http://localhost:${session.port}/api/sessions`);
   const sessions = await response.json();
 }
 ```
@@ -156,6 +159,32 @@ const result = await api.workspace.delete({ keepBranch: true });
 ```
 
 **Note:** Deletion is async - the Promise resolves immediately with `{ started: true }`. The actual cleanup happens in the background.
+
+#### Create a New Workspace
+
+```typescript
+// Create a new workspace in the same project
+const workspace = await api.workspace.create("feature-auth", "main");
+console.log("Created workspace:", workspace.name, "at", workspace.path);
+
+// Create workspace with an initial prompt for the AI agent
+const workspace = await api.workspace.create("fix-bug-123", "main", {
+  initialPrompt: "Fix the login validation bug described in issue #123",
+});
+
+// Create workspace with initial prompt and specific agent
+const workspace = await api.workspace.create("refactor-api", "main", {
+  initialPrompt: { prompt: "Refactor the API module for better testability", agent: "coder" },
+  keepInBackground: true, // Don't switch to the new workspace
+});
+```
+
+**Notes:**
+
+- The new workspace is created in the same project as the current workspace
+- `initialPrompt` can be a string (uses default agent) or `{ prompt, agent }` object
+- If `keepInBackground` is `true`, the UI stays on the current workspace; otherwise it switches to the new one
+- The initial prompt is sent asynchronously after the workspace is ready (fire-and-forget)
 
 #### Execute VS Code Commands
 
@@ -290,14 +319,33 @@ interface WorkspaceStatus {
   readonly agent: AgentStatus;
 }
 
+type InitialPrompt = string | { prompt: string; agent?: string };
+
+interface WorkspaceCreateOptions {
+  initialPrompt?: InitialPrompt;
+  keepInBackground?: boolean;
+}
+
+interface Workspace {
+  name: string;
+  path: string;
+  base: string;
+}
+
+interface OpenCodeSession {
+  readonly port: number;
+  readonly sessionId: string;
+}
+
 interface WorkspaceApi {
   getStatus(): Promise<WorkspaceStatus>;
-  getOpencodePort(): Promise<number | null>;
+  getOpenCodeSession(): Promise<OpenCodeSession | null>;
   restartOpencodeServer(): Promise<number>;
   getMetadata(): Promise<Readonly<Record<string, string>>>;
   setMetadata(key: string, value: string | null): Promise<void>;
   executeCommand(command: string, args?: readonly unknown[]): Promise<unknown>;
   delete(options?: { keepBranch?: boolean }): Promise<{ started: boolean }>;
+  create(name: string, base: string, options?: WorkspaceCreateOptions): Promise<Workspace>;
 }
 
 interface CodehydraApi {
@@ -372,12 +420,13 @@ All events use acknowledgment callbacks for request/response pattern.
 | Event                                 | Request Payload          | Response                                |
 | ------------------------------------- | ------------------------ | --------------------------------------- |
 | `api:workspace:getStatus`             | None                     | `PluginResult<WorkspaceStatus>`         |
-| `api:workspace:getOpencodePort`       | None                     | `PluginResult<number \| null>`          |
+| `api:workspace:getOpenCodeSession`    | None                     | `PluginResult<OpenCodeSession \| null>` |
 | `api:workspace:restartOpencodeServer` | None                     | `PluginResult<number>`                  |
 | `api:workspace:getMetadata`           | None                     | `PluginResult<Record<string, string>>`  |
 | `api:workspace:setMetadata`           | `SetMetadataRequest`     | `PluginResult<void>`                    |
 | `api:workspace:executeCommand`        | `ExecuteCommandRequest`  | `PluginResult<unknown>`                 |
 | `api:workspace:delete`                | `DeleteWorkspaceRequest` | `PluginResult<DeleteWorkspaceResponse>` |
+| `api:workspace:create`                | `WorkspaceCreateRequest` | `PluginResult<Workspace>`               |
 
 ### Event Channels (Server → Client)
 
@@ -412,6 +461,26 @@ interface DeleteWorkspaceRequest {
 
 interface DeleteWorkspaceResponse {
   started: boolean; // True if deletion was started (deletion is async)
+}
+
+type InitialPrompt = string | { prompt: string; agent?: string };
+
+interface WorkspaceCreateRequest {
+  name: string; // Name for the new workspace (becomes branch name)
+  base: string; // Base branch to create the workspace from
+  initialPrompt?: InitialPrompt; // Optional initial prompt to send to AI agent
+  keepInBackground?: boolean; // If true, don't switch to the new workspace. Default: false
+}
+
+interface WorkspaceCreateOptions {
+  initialPrompt?: InitialPrompt;
+  keepInBackground?: boolean;
+}
+
+interface Workspace {
+  name: string; // Workspace name (also the branch name)
+  path: string; // Absolute path to the workspace directory
+  base: string; // Base branch this workspace was created from
 }
 ```
 
@@ -462,8 +531,8 @@ class CodehydraClient {
     return this.emit("api:workspace:getStatus");
   }
 
-  async getOpencodePort(): Promise<number | null> {
-    return this.emit("api:workspace:getOpencodePort");
+  async getOpenCodeSession(): Promise<OpenCodeSession | null> {
+    return this.emit("api:workspace:getOpenCodeSession");
   }
 
   async getMetadata(): Promise<Record<string, string>> {
@@ -541,6 +610,140 @@ This is used by CodeHydra to send startup commands (close sidebars, open termina
 
 ---
 
+## VS Code Object Serialization
+
+VS Code commands often require class instances (Uri, Position, Range, etc.) that cannot be serialized through JSON. The `executeCommand` method supports a `$vscode` wrapper format to pass these objects through MCP or WebSocket interfaces.
+
+### Supported Types
+
+| Type      | `$vscode` Value | Required Fields     | Field Types            | Reconstruction                  |
+| --------- | --------------- | ------------------- | ---------------------- | ------------------------------- |
+| Uri       | `"Uri"`         | `value`             | `string`               | `Uri.parse(value)`              |
+| Position  | `"Position"`    | `line`, `character` | `number`, `number`     | `new Position(line, character)` |
+| Range     | `"Range"`       | `start`, `end`      | `Position`, `Position` | `new Range(start, end)`         |
+| Selection | `"Selection"`   | `anchor`, `active`  | `Position`, `Position` | `new Selection(anchor, active)` |
+| Location  | `"Location"`    | `uri`, `range`      | `Uri`, `Range`         | `new Location(uri, range)`      |
+
+### JSON Format Examples
+
+#### Uri
+
+```json
+{ "$vscode": "Uri", "value": "file:///path/to/file.ts" }
+```
+
+#### Position
+
+```json
+{ "$vscode": "Position", "line": 10, "character": 5 }
+```
+
+#### Range
+
+```json
+{
+  "$vscode": "Range",
+  "start": { "$vscode": "Position", "line": 10, "character": 5 },
+  "end": { "$vscode": "Position", "line": 10, "character": 20 }
+}
+```
+
+#### Selection
+
+```json
+{
+  "$vscode": "Selection",
+  "anchor": { "$vscode": "Position", "line": 5, "character": 0 },
+  "active": { "$vscode": "Position", "line": 10, "character": 15 }
+}
+```
+
+#### Location (fully nested)
+
+```json
+{
+  "$vscode": "Location",
+  "uri": { "$vscode": "Uri", "value": "file:///path/to/file.ts" },
+  "range": {
+    "$vscode": "Range",
+    "start": { "$vscode": "Position", "line": 10, "character": 5 },
+    "end": { "$vscode": "Position", "line": 10, "character": 20 }
+  }
+}
+```
+
+### Usage Example
+
+```typescript
+// Open a file using vscode.open command with a Uri argument
+await api.workspace.executeCommand("vscode.open", [
+  { $vscode: "Uri", value: "file:///c:/path/to/file.ts" },
+]);
+
+// Go to a specific location
+await api.workspace.executeCommand("editor.action.goToLocations", [
+  { $vscode: "Uri", value: "file:///c:/path/to/file.ts" },
+  { $vscode: "Position", line: 10, character: 0 },
+  [
+    {
+      $vscode: "Location",
+      uri: { $vscode: "Uri", value: "file:///c:/path/to/other.ts" },
+      range: {
+        $vscode: "Range",
+        start: { $vscode: "Position", line: 5, character: 0 },
+        end: { $vscode: "Position", line: 5, character: 10 },
+      },
+    },
+  ],
+]);
+```
+
+### Nested Object Handling
+
+The reconstruction is recursive, processing:
+
+- Arrays: each element is recursively processed
+- Objects: each property value is recursively processed
+- `$vscode` markers: validated and reconstructed using VS Code constructors
+
+Plain objects and primitives pass through unchanged. Mixed objects work correctly:
+
+```json
+{
+  "label": "Go to definition",
+  "location": { "$vscode": "Location", "uri": {...}, "range": {...} }
+}
+```
+
+Result: `{ label: "Go to definition", location: <Location instance> }`
+
+### Error Messages
+
+**Unknown type:**
+
+```
+Unknown VS Code object type: "Unknown". Supported types: Uri, Position, Range, Selection, Location
+```
+
+**Missing field:**
+
+```
+Invalid VS Code Position: missing required field "line"
+```
+
+**Invalid field type:**
+
+```
+Invalid VS Code Position: field "line" must be a number, got string
+```
+
+### Limitations
+
+- **Circular references**: Not supported. Will cause stack overflow.
+- **$vscode key collision**: If your data genuinely contains a `$vscode` key, wrap it in another object: `{ "data": { "$vscode": "literal" } }`.
+
+---
+
 ## Private API
 
 The private API is used exclusively by CodeHydra's renderer process (Svelte UI) to communicate with the main Electron process via IPC. **This API is not intended for external consumers.**
@@ -584,7 +787,7 @@ const unsubscribe = on("workspace:switched", (event) => {
 | `forceRemove`           | `(projectId: ProjectId, workspaceName: WorkspaceName) => Promise<void>`                                                                                                              | Force remove (skip cleanup)                                                                                                                                                                                                                                                                            |
 | `get`                   | `(projectId: ProjectId, workspaceName: WorkspaceName) => Promise<Workspace \| undefined>`                                                                                            | Get a workspace                                                                                                                                                                                                                                                                                        |
 | `getStatus`             | `(projectId: ProjectId, workspaceName: WorkspaceName) => Promise<WorkspaceStatus>`                                                                                                   | Get workspace status                                                                                                                                                                                                                                                                                   |
-| `getOpencodePort`       | `(projectId: ProjectId, workspaceName: WorkspaceName) => Promise<number \| null>`                                                                                                    | Get OpenCode server port                                                                                                                                                                                                                                                                               |
+| `getOpenCodeSession`    | `(projectId: ProjectId, workspaceName: WorkspaceName) => Promise<OpenCodeSession \| null>`                                                                                           | Get OpenCode session info (port + sessionId)                                                                                                                                                                                                                                                           |
 | `restartOpencodeServer` | `(projectId: ProjectId, workspaceName: WorkspaceName) => Promise<number>`                                                                                                            | Restart OpenCode server, preserving port                                                                                                                                                                                                                                                               |
 | `setMetadata`           | `(projectId: ProjectId, workspaceName: WorkspaceName, key: string, value: string \| null) => Promise<void>`                                                                          | Set/delete metadata                                                                                                                                                                                                                                                                                    |
 | `getMetadata`           | `(projectId: ProjectId, workspaceName: WorkspaceName) => Promise<Record<string, string>>`                                                                                            | Get all metadata                                                                                                                                                                                                                                                                                       |
